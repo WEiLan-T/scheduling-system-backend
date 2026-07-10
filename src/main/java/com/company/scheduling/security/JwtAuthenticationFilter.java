@@ -9,6 +9,9 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.security.core.authority.SimpleGrantedAuthority; // 新增导入
+import org.springframework.security.core.GrantedAuthority; // 新增导入
+import java.util.List; // 新增导入
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -36,13 +39,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         // 2. 验证 Token 的合法性
         if (token != null && jwtUtil.validateToken(token)) {
-            // 3. 如果合法，提取出用户名
+            // 3. 提取出用户名和角色
             String username = jwtUtil.getUsernameFromToken(token);
+            String role = jwtUtil.getRoleFromToken(token); // 🌟 新增：提取角色
 
-            // 4. 告知 Spring Security：这个人身份没问题，放行！
+            // 4. 告知 Spring Security：这个人身份没问题，并且赋予他对应的角色权限
             if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+
+                // 🌟 新增：将字符串角色转换为 Spring 认识的权限对象
+                List<GrantedAuthority> authorities = new ArrayList<>();
+                authorities.add(new SimpleGrantedAuthority(role));
+
+                // 把 authorities 传进去，替代之前写的 new ArrayList<>()
                 UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
-                        username, null, new ArrayList<>() // 这里后续可以加入 RBAC 角色权限控制
+                        username, null, authorities
                 );
                 SecurityContextHolder.getContext().setAuthentication(auth);
             }

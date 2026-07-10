@@ -3,9 +3,9 @@ package com.company.scheduling.controller;
 import com.company.scheduling.service.EstimationService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.math.BigDecimal;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/workshops/estimation")
@@ -17,13 +17,17 @@ public class EstimationController {
         this.estimationService = estimationService;
     }
 
-    // 使用 GET 请求，因为我们只是查询，不修改数据
-    @GetMapping("/completion-time")
-    public ResponseEntity<String> getCompletionTime(
-            @RequestParam UUID tapePartNumber,
-            @RequestParam BigDecimal targetQty) {
+    // 接口路径更新为 /dynamic-completion-time
+    @GetMapping("/dynamic-completion-time")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER')") // 🌟 仅限计划员访问
+    public ResponseEntity<String> getDynamicCompletionTime(
+            @RequestParam String machineId,
+            @RequestParam BigDecimal targetQty,
+            @RequestParam(required = false) BigDecimal customCapacity) { // required = false 表示这个参数可以不传
 
-        String result = estimationService.calculateEstimatedCompletionTime(tapePartNumber, targetQty);
+        // 调用 Service 层最新的联动计算引擎
+        String result = estimationService.calculateDynamicCompletionTime(machineId, targetQty, customCapacity);
+
         return ResponseEntity.ok(result);
     }
 }

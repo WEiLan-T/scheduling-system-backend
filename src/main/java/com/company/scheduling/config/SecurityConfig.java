@@ -10,9 +10,11 @@ import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity; // 导入开关
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity // 🌟 开启全局方法级权限控制
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthFilter;

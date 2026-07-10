@@ -63,4 +63,15 @@ public class JwtUtil {
                 .getPayload()
                 .getSubject();
     }
+    /**
+     * 从 Token 中提取角色 (Role)
+     */
+    public String getRoleFromToken(String token) {
+        return Jwts.parser()
+                .verifyWith(key)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload()
+                .get("role", String.class);
+    }
 }
