@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>企业级排产调度系统 (MES)</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <style>
+        body { margin: 0; background-color: #f0f2f5; font-family: 'Microsoft YaHei', sans-serif; }
+        .app-container { height: 100vh; display: flex; flex-direction: column; }
+        .header { background-color: #001529; color: white; line-height: 60px; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 10;}
+        .main-content { padding: 20px; flex: 1; overflow-y: auto; }
+        .login-container { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #2d3a4b; }
+        .login-box { width: 400px; padding: 40px; background: white; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .report-box { margin-top: 20px; padding: 20px; background: #f8f9fa; border-left: 5px solid #67c23a; white-space: pre-wrap; font-family: monospace; font-size: 15px; line-height: 1.8; color: #303133;}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div v-if="!isLoggedIn" class="login-container">
+        <div class="login-box">
+            <h2 style="text-align: center; margin-bottom: 30px; color: #303133;">MES 零信任安全网关</h2>
+            <el-form :model="loginForm" label-width="60px">
+                <el-form-item label="账号">
+                    <el-input v-model="loginForm.username" placeholder="如: PLANNER_01"></el-input>
+                </el-form-item>
+                <el-form-item label="密码">
+                    <el-input type="password" v-model="loginForm.password" @keyup.enter="handleLogin"></el-input>
+                </el-form-item>
+                <el-form-item>
+                    <el-button type="primary" style="width: 100%" @click="handleLogin" :loading="loading">安全登录</el-button>
+                </el-form-item>
+            </el-form>
+        </div>
+    </div>
+
+    <div v-else class="app-container">
+        <div class="header">
+            <h2 style="margin: 0; font-size: 20px;">🏭 织造-共挤联合排产调度系统</h2>
+            <div>
+                <span style="margin-right: 15px; font-size: 14px;">当前登录: <b>{{ currentUser }}</b></span>
+                <el-button type="danger" size="small" @click="handleLogout">退出系统</el-button>
+            </div>
+        </div>
+
+        <div style="display: flex; flex: 1; overflow: hidden;">
+            <div style="width: 220px; background: white; border-right: 1px solid #e6e6e6;">
+                <el-menu :default-active="activeMenu" @select="handleMenuSelect" style="border-right: none;">
+                    <el-menu-item index="entry">
+                        <span>✍️ 车间台账录入</span>
+                    </el-menu-item>
+                    <el-menu-item index="estimation">
+                        <span>📊 智能排产估算</span>
+                    </el-menu-item>
+                </el-menu>
+            </div>
+
+            <div class="main-content">
+                <div v-show="activeMenu === 'entry'">
+                    <el-card shadow="never">
+                        <template #header><b style="font-size: 16px;">一期工程：现场数据留痕录入</b></template>
+                        <el-form :inline="true" :model="entryForm">
+                            <el-form-item label="工人编号">
+                                <el-input v-model="entryForm.workerId"></el-input>
+                            </el-form-item>
+                            <el-form-item label="生产机台">
+                                <el-input v-model="entryForm.machineId"></el-input>
+                            </el-form-item>
+                            <el-form-item label="完成产量 (米)">
+                                <el-input-number v-model="entryForm.qty" :min="1"></el-input-number>
+                            </el-form-item>
+                            <el-form-item label="带坯零件号">
+                                <el-input v-model="entryForm.tapePartNumber" style="width: 320px;"></el-input>
+                            </el-form-item>
+                            <el-form-item>
+                                <el-button type="primary" @click="submitEntry" :loading="loading">提交并留痕</el-button>
+                            </el-form-item>
+                        </el-form>
+                        <el-alert v-if="entryResult" :title="entryResult" type="success" show-icon style="margin-top: 15px;"></el-alert>
+                    </el-card>
+                </div>
+
+                <div v-show="activeMenu === 'estimation'">
+                    <el-card shadow="never">
+                        <template #header><b style="font-size: 16px;">全流水线完工周期推演引擎</b></template>
+                        <el-form :inline="true" :model="estForm">
+                            <el-form-item label="目标机台号">
+                                <el-input v-model="estForm.machineId" placeholder="例如: z12 触发桥架联动"></el-input>
+                            </el-form-item>
+                            <el-form-item label="新单目标产量 (米)">
+                                <el-input-number v-model="estForm.targetQty" :min="1"></el-input-number>
+                            </el-form-item>
+                            <el-form-item label="人工干预产能 (可选)">
+                                <el-input-number v-model="estForm.customCapacity" :min="0"></el-input-number>
+                            </el-form-item>
+                            <el-form-item>
+                                <el-button type="success" @click="submitEstimation" :loading="loading">⚡ 发起联动推演</el-button>
+                            </el-form-item>
+                        </el-form>
+
+                        <div v-if="estResult" class="report-box">
+                            {{ estResult }}
+                        </div>
+                    </el-card>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/element-plus"></script>
+<script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+
+<script src="/app.js"></script>
+</body>
+</html>
