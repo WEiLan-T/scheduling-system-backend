@@ -6,5 +6,5 @@ import lombok.Data;
 public class AuthRequest {
     private String username;
     private String password;
-    private String role; // 注册时指定角色，登录时可忽略
+    private String role; // 仅在注册时可选，如 ROLE_ADMIN
 }

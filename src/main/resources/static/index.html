@@ -2,32 +2,34 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>企业级排产调度系统 (MES)</title>
+    <title>企业级联合排产调度系统 (MES & APS)</title>
     <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
     <style>
         body { margin: 0; background-color: #f0f2f5; font-family: 'Microsoft YaHei', sans-serif; }
         .app-container { height: 100vh; display: flex; flex-direction: column; }
-        .header { background-color: #001529; color: white; line-height: 60px; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 10;}
+        .header { background-color: #0f172a; color: white; line-height: 60px; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 10;}
         .main-content { padding: 20px; flex: 1; overflow-y: auto; }
-        .login-container { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #2d3a4b; }
-        .login-box { width: 400px; padding: 40px; background: white; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        .report-box { margin-top: 20px; padding: 20px; background: #f8f9fa; border-left: 5px solid #67c23a; white-space: pre-wrap; font-family: monospace; font-size: 15px; line-height: 1.8; color: #303133;}
+        .login-container { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #1e293b; }
+        .login-box { width: 380px; padding: 40px; background: white; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        .el-menu { border-right: none !important; }
+        .el-card__header { background-color: #f8fafc; }
+        .report-box { margin-top: 20px; padding: 20px; background: #f0fdf4; border-left: 5px solid #10b981; white-space: pre-wrap; font-family: monospace; font-size: 15px; color: #064e3b;}
     </style>
 </head>
 <body>
 <div id="app">
     <div v-if="!isLoggedIn" class="login-container">
         <div class="login-box">
-            <h2 style="text-align: center; margin-bottom: 30px; color: #303133;">MES 零信任安全网关</h2>
-            <el-form :model="loginForm" label-width="60px">
-                <el-form-item label="账号">
-                    <el-input v-model="loginForm.username" placeholder="如: PLANNER_01"></el-input>
+            <h2 style="text-align: center; margin-bottom: 30px; color: #1e293b;">MES 安全网关认证</h2>
+            <el-form :model="loginForm" label-position="top">
+                <el-form-item label="工号 / 账号">
+                    <el-input v-model="loginForm.username" placeholder="请输入您的工号..."></el-input>
                 </el-form-item>
-                <el-form-item label="密码">
-                    <el-input type="password" v-model="loginForm.password" @keyup.enter="handleLogin"></el-input>
+                <el-form-item label="安保密令">
+                    <el-input type="password" v-model="loginForm.password" @keyup.enter="handleLogin" show-password></el-input>
                 </el-form-item>
-                <el-form-item>
-                    <el-button type="primary" style="width: 100%" @click="handleLogin" :loading="loading">安全登录</el-button>
+                <el-form-item style="margin-top: 30px;">
+                    <el-button type="primary" size="large" style="width: 100%" @click="handleLogin" :loading="loading">刷卡登入</el-button>
                 </el-form-item>
             </el-form>
         </div>
@@ -35,73 +37,178 @@
 
     <div v-else class="app-container">
         <div class="header">
-            <h2 style="margin: 0; font-size: 20px;">🏭 织造-共挤联合排产调度系统</h2>
+            <h2 style="margin: 0; font-size: 20px;">🏭 织造-共挤智能排产与制造执行系统 (v2.0)</h2>
             <div>
-                <span style="margin-right: 15px; font-size: 14px;">当前登录: <b>{{ currentUser }}</b></span>
-                <el-button type="danger" size="small" @click="handleLogout">退出系统</el-button>
+                <el-tag type="success" effect="dark" style="margin-right: 15px; font-size: 14px;">当前签到: {{ currentUser }}</el-tag>
+                <el-button type="danger" size="small" @click="handleLogout">交接下班</el-button>
             </div>
         </div>
 
         <div style="display: flex; flex: 1; overflow: hidden;">
-            <div style="width: 220px; background: white; border-right: 1px solid #e6e6e6;">
-                <el-menu :default-active="activeMenu" @select="handleMenuSelect" style="border-right: none;">
-                    <el-menu-item index="entry">
-                        <span>✍️ 车间台账录入</span>
-                    </el-menu-item>
-                    <el-menu-item index="estimation">
-                        <span>📊 智能排产估算</span>
-                    </el-menu-item>
+            <div style="width: 240px; background: white; border-right: 1px solid #e2e8f0;">
+                <el-menu :default-active="activeMenu" @select="handleMenuSelect">
+                    <el-menu-item-group title="现场执行层 (MES)">
+                        <el-menu-item index="weaving"><span>🧶 织造车间聚合录入</span></el-menu-item>
+                        <el-menu-item index="coex"><span>🗜️ 共挤车间聚合录入</span></el-menu-item>
+                        <el-menu-item index="inventory"><span>📦 虚拟库存人工盘点</span></el-menu-item>
+                    </el-menu-item-group>
+                    <el-menu-item-group title="计划指挥层 (APS)">
+                        <el-menu-item index="order"><span>🛒 销售订单统一下达</span></el-menu-item>
+                        <el-menu-item index="estimation"><span>📊 桥架联动排产推演</span></el-menu-item>
+                    </el-menu-item-group>
                 </el-menu>
             </div>
 
             <div class="main-content">
-                <div v-show="activeMenu === 'entry'">
-                    <el-card shadow="never">
-                        <template #header><b style="font-size: 16px;">一期工程：现场数据留痕录入</b></template>
-                        <el-form :inline="true" :model="entryForm">
-                            <el-form-item label="工人编号">
-                                <el-input v-model="entryForm.workerId"></el-input>
-                            </el-form-item>
-                            <el-form-item label="生产机台">
-                                <el-input v-model="entryForm.machineId"></el-input>
-                            </el-form-item>
-                            <el-form-item label="完成产量 (米)">
-                                <el-input-number v-model="entryForm.qty" :min="1"></el-input-number>
-                            </el-form-item>
-                            <el-form-item label="带坯零件号">
-                                <el-input v-model="entryForm.tapePartNumber" style="width: 320px;"></el-input>
-                            </el-form-item>
-                            <el-form-item>
-                                <el-button type="primary" @click="submitEntry" :loading="loading">提交并留痕</el-button>
-                            </el-form-item>
+
+                <div v-show="activeMenu === 'weaving'">
+                    <el-card shadow="hover">
+                        <template #header><b style="font-size: 16px; color: #0284c7;">🧶 织造车间状态与台账聚合工作台</b></template>
+                        <el-form :model="weavingForm" label-width="110px" style="max-width: 900px;" size="small">
+                            <el-divider content-position="left">一、基础业务信息</el-divider>
+                            <el-row :gutter="20">
+                                <el-col :span="12"><el-form-item label="业务归属日期"><el-date-picker v-model="weavingForm.entryDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item></el-col>
+                                <el-col :span="12"><el-form-item label="带坯零件号"><el-input v-model="weavingForm.tapePartNumber" placeholder="记录产出的带坯..."></el-input></el-form-item></el-col>
+                            </el-row>
+                            <el-divider content-position="left">二、机台现场状态</el-divider>
+                            <el-row :gutter="20">
+                                <el-col :span="8"><el-form-item label="机台号"><el-input v-model="weavingForm.machineId"></el-input></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="车间号"><el-input v-model="weavingForm.workshopId"></el-input></el-form-item></el-col>
+                                <el-col :span="8">
+                                    <el-form-item label="机台状态">
+                                        <el-select v-model="weavingForm.machineStatus" style="width:100%">
+                                            <el-option label="在产" value="在产"></el-option><el-option label="空闲" value="空闲"></el-option>
+                                            <el-option label="维修" value="维修"></el-option><el-option label="调试" value="调试"></el-option>
+                                        </el-select>
+                                    </el-form-item>
+                                </el-col>
+                            </el-row>
+                            <el-row :gutter="20">
+                                <el-col :span="8"><el-form-item label="经线型号"><el-input v-model="weavingForm.warpSpec"></el-input></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="纬线型号"><el-input v-model="weavingForm.weftSpec"></el-input></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="筒子数"><el-input-number v-model="weavingForm.bobbinCount" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
+                            </el-row>
+                            <el-row :gutter="20">
+                                <el-col :span="8"><el-form-item label="挡车工"><el-input v-model="weavingForm.operatorName"></el-input></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="相邻机台"><el-input v-model="weavingForm.adjacentMachine"></el-input></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="口径限制"><el-input v-model="weavingForm.caliberLimit"></el-input></el-form-item></el-col>
+                            </el-row>
+                            <el-divider content-position="left">三、每日台账数据</el-divider>
+                            <el-row :gutter="20">
+                                <el-col :span="8"><el-form-item label="今日产能(米)"><el-input-number v-model="weavingForm.capacityPerDay" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="数据正常?"><el-switch v-model="weavingForm.isDataNormal" active-text="正常" inactive-text="异常"></el-switch></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="总需求量"><el-input-number v-model="weavingForm.totalDemand" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
+                            </el-row>
+                            <el-form-item label="备注说明"><el-input type="textarea" v-model="weavingForm.remarks"></el-input></el-form-item>
+                            <el-form-item><el-button type="primary" size="large" @click="submitWeaving" :loading="loading">合并归档，自动增加库存</el-button></el-form-item>
                         </el-form>
-                        <el-alert v-if="entryResult" :title="entryResult" type="success" show-icon style="margin-top: 15px;"></el-alert>
+                        <el-alert v-if="entryResult && activeMenu === 'weaving'" :title="entryResult" type="success" show-icon style="margin-top: 15px;"></el-alert>
+                    </el-card>
+                </div>
+
+                <div v-show="activeMenu === 'coex'">
+                    <el-card shadow="hover">
+                        <template #header><b style="font-size: 16px; color: #eab308;">🗜️ 共挤车间状态与台账聚合工作台</b></template>
+                        <el-form :model="coexForm" label-width="110px" style="max-width: 900px;" size="small">
+                            <el-divider content-position="left">一、基础业务信息</el-divider>
+                            <el-row :gutter="20">
+                                <el-col :span="12"><el-form-item label="业务归属日期"><el-date-picker v-model="coexForm.entryDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item></el-col>
+                                <el-col :span="12"><el-form-item label="成品零件号"><el-input v-model="coexForm.finishedPartNumber" placeholder="记录产出的成品..."></el-input></el-form-item></el-col>
+                            </el-row>
+                            <el-divider content-position="left">二、产线现场状态</el-divider>
+                            <el-row :gutter="20">
+                                <el-col :span="8"><el-form-item label="产线号"><el-input v-model="coexForm.lineId"></el-input></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="车间号"><el-input v-model="coexForm.workshopId"></el-input></el-form-item></el-col>
+                                <el-col :span="8">
+                                    <el-form-item label="产线状态">
+                                        <el-select v-model="coexForm.lineStatus" style="width:100%">
+                                            <el-option label="在产" value="在产"></el-option><el-option label="空闲" value="空闲"></el-option>
+                                            <el-option label="维修" value="维修"></el-option><el-option label="调试" value="调试"></el-option>
+                                        </el-select>
+                                    </el-form-item>
+                                </el-col>
+                            </el-row>
+                            <el-row :gutter="20">
+                                <el-col :span="8"><el-form-item label="口径限制"><el-input v-model="coexForm.caliberLimit"></el-input></el-form-item></el-col>
+                            </el-row>
+                            <el-divider content-position="left">三、每日台账数据</el-divider>
+                            <el-row :gutter="20">
+                                <el-col :span="8"><el-form-item label="今日产能(米)"><el-input-number v-model="coexForm.capacityPerDay" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
+                                <el-col :span="8"><el-form-item label="数据正常?"><el-switch v-model="coexForm.isDataNormal" active-text="正常" inactive-text="异常"></el-switch></el-form-item></el-col>
+                            </el-row>
+                            <el-row :gutter="20">
+                                <el-col :span="12"><el-form-item label="消耗带坯号"><el-input v-model="coexForm.tapePartNumber" placeholder="必须填写，用于扣库存！"></el-input></el-form-item></el-col>
+                                <el-col :span="12"><el-form-item label="带坯消耗量"><el-input-number v-model="coexForm.tapeDemandQty" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
+                            </el-row>
+                            <el-form-item label="备注说明"><el-input type="textarea" v-model="coexForm.remarks"></el-input></el-form-item>
+                            <el-form-item><el-button type="warning" size="large" @click="submitCoex" :loading="loading">合并归档，自动扣减库存</el-button></el-form-item>
+                        </el-form>
+                        <el-alert v-if="entryResult && activeMenu === 'coex'" :title="entryResult" type="success" show-icon style="margin-top: 15px;"></el-alert>
+                    </el-card>
+                </div>
+
+                <div v-show="activeMenu === 'inventory'">
+                    <el-card shadow="hover">
+                        <template #header><b style="font-size: 16px; color: #f97316;">📦 虚拟库存人工干预通道</b></template>
+                        <el-alert type="warning" title="自动核算提醒：车间录入台账时系统已自动增减库存，此通道仅用于期末盘点与强强调账！" show-icon style="margin-bottom: 20px;"></el-alert>
+                        <el-form :inline="true" :model="invForm" label-width="100px">
+                            <el-form-item label="业务归属日期"><el-date-picker v-model="invForm.entryDate" type="date" value-format="YYYY-MM-DD"></el-date-picker></el-form-item>
+                            <el-form-item label="带坯零件号"><el-input v-model="invForm.tapePartNumber"></el-input></el-form-item>
+                            <el-form-item label="调账米数"><el-input-number v-model="invForm.adjustMeters" placeholder="正数表示增加库存，负数扣除"></el-input-number></el-form-item>
+                            <el-form-item><el-button type="warning" @click="submitInventory" :loading="loading">确认执行调账</el-button></el-form-item>
+                        </el-form>
+                        <el-alert v-if="invResult" :title="invResult" type="success" show-icon></el-alert>
+                    </el-card>
+                </div>
+
+                <div v-show="activeMenu === 'order'">
+                    <el-card shadow="hover">
+                        <template #header><b style="font-size: 16px; color: #8b5cf6;">🛒 生产订单统一下达工作台</b></template>
+
+                        <div style="background: #f8fafc; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #e2e8f0;">
+                            <el-form :inline="true" :model="orderHeader" label-width="80px">
+                                <el-form-item label="订单号"><el-input v-model="orderHeader.orderId" placeholder="例: ORD-001"></el-input></el-form-item>
+                                <el-form-item label="下单人"><el-input v-model="orderHeader.placerName"></el-input></el-form-item>
+                                <el-form-item label="下单时间"><el-date-picker v-model="orderHeader.orderDate" type="date" value-format="YYYY-MM-DD"></el-date-picker></el-form-item>
+                                <el-form-item label="交货时间"><el-date-picker v-model="orderHeader.deliveryDate" type="date" value-format="YYYY-MM-DD"></el-date-picker></el-form-item>
+                            </el-form>
+                        </div>
+
+                        <div style="margin-bottom: 15px; display: flex; justify-content: space-between;">
+                            <b style="font-size: 14px;">订单产品明细</b>
+                            <el-button type="primary" plain size="small" @click="addOrderItem">+ 添加一行产品明细</el-button>
+                        </div>
+
+                        <el-table :data="orderItems" border stripe style="width: 100%">
+                            <el-table-column label="成品零件号" width="150"><template #default="scope"><el-input v-model="scope.row.finishedPartNumber" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="型号" width="100"><template #default="scope"><el-input v-model="scope.row.modelSpec" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="材质" width="100"><template #default="scope"><el-input v-model="scope.row.material" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="口径" width="100"><template #default="scope"><el-input v-model="scope.row.caliber" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="单卷米数" width="120"><template #default="scope"><el-input-number v-model="scope.row.metersPerRoll" :min="0" size="small" style="width: 100%" @change="calcTotal(scope.row)"></el-input-number></template></el-table-column>
+                            <el-table-column label="卷数" width="120"><template #default="scope"><el-input-number v-model="scope.row.rollCount" :min="0" size="small" style="width: 100%" @change="calcTotal(scope.row)"></el-input-number></template></el-table-column>
+                            <el-table-column label="总长度" width="100"><template #default="scope"><el-input v-model="scope.row.totalLength" size="small" readonly style="background:#f1f5f9;"></el-input></template></el-table-column>
+                            <el-table-column label="备注"><template #default="scope"><el-input v-model="scope.row.remarks" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="操作" width="60" align="center"><template #default="scope"><el-button type="danger" size="small" @click="removeOrderItem(scope.$index)">删</el-button></template></el-table-column>
+                        </el-table>
+
+                        <div style="margin-top: 25px;"><el-button type="success" size="large" @click="submitOrder" :loading="loading">正式下达生产订单</el-button></div>
+                        <el-alert v-if="orderResult && activeMenu === 'order'" :title="orderResult" type="success" show-icon style="margin-top: 15px;"></el-alert>
                     </el-card>
                 </div>
 
                 <div v-show="activeMenu === 'estimation'">
-                    <el-card shadow="never">
-                        <template #header><b style="font-size: 16px;">全流水线完工周期推演引擎</b></template>
+                    <el-card shadow="hover">
+                        <template #header><b style="font-size: 16px; color: #10b981;">📊 桥架联动全流水线排产推演引擎</b></template>
                         <el-form :inline="true" :model="estForm">
-                            <el-form-item label="目标机台号">
-                                <el-input v-model="estForm.machineId" placeholder="例如: z12 触发桥架联动"></el-input>
-                            </el-form-item>
-                            <el-form-item label="新单目标产量 (米)">
-                                <el-input-number v-model="estForm.targetQty" :min="1"></el-input-number>
-                            </el-form-item>
-                            <el-form-item label="人工干预产能 (可选)">
-                                <el-input-number v-model="estForm.customCapacity" :min="0"></el-input-number>
-                            </el-form-item>
-                            <el-form-item>
-                                <el-button type="success" @click="submitEstimation" :loading="loading">⚡ 发起联动推演</el-button>
-                            </el-form-item>
+                            <el-form-item label="发起端机台号"><el-input v-model="estForm.machineId" placeholder="例如输入 z12"></el-input></el-form-item>
+                            <el-form-item label="目标订单产量"><el-input-number v-model="estForm.targetQty" :min="1"></el-input-number></el-form-item>
+                            <el-form-item label="人工干预产能"><el-input-number v-model="estForm.customCapacity" :min="0" placeholder="留空则读取系统标准"></el-input-number></el-form-item>
+                            <el-form-item><el-button type="success" @click="submitEstimation" :loading="loading">🚀 启动大脑智能推演</el-button></el-form-item>
                         </el-form>
-
-                        <div v-if="estResult" class="report-box">
-                            {{ estResult }}
-                        </div>
+                        <div v-if="estResult" class="report-box">{{ estResult }}</div>
                     </el-card>
                 </div>
+
             </div>
         </div>
     </div>

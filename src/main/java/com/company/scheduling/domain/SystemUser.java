@@ -1,25 +1,15 @@
 package com.company.scheduling.domain;
-
 import jakarta.persistence.*;
 import lombok.Data;
+import java.time.LocalDateTime;
 
-@Data
-@Entity
-@Table(name = "system_users")
+@Data @Entity @Table(name = "system_users")
 public class SystemUser {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "user_id")
-    private Integer userId;
-
-    @Column(nullable = false, unique = true, length = 50)
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Integer id;
     private String username;
-
-    // 映射到数据库的 password_hash 字段
-    @Column(name = "password_hash", nullable = false, length = 255)
-    private String password;
-
-    @Column(nullable = false, length = 20)
+    private String passwordHash;
     private String role;
+    private String enteredBy;
+    private LocalDateTime createdAt = LocalDateTime.now();
 }

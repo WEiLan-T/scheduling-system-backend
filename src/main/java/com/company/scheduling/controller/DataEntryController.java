@@ -1,12 +1,13 @@
 package com.company.scheduling.controller;
 
-import com.company.scheduling.dto.DailyLogRequest;
+import com.company.scheduling.dto.CoexEntryRequest;
+import com.company.scheduling.dto.InventoryAdjustRequest;
+import com.company.scheduling.dto.WeavingEntryRequest;
 import com.company.scheduling.service.DataEntryService;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
 
-// 引入 Java 原生的防伪身份接口
 import java.security.Principal;
 
 @RestController
@@ -19,17 +20,24 @@ public class DataEntryController {
         this.dataEntryService = dataEntryService;
     }
 
-    @PostMapping("/daily-logs")
-    @PreAuthorize("hasAuthority('ROLE_ENTRY_CLERK')") // 🌟 仅限录入员访问
-    public ResponseEntity<String> submitDailyLog(@RequestBody DailyLogRequest request, Principal principal) {
+    @PostMapping("/weaving/logs")
+    @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> submitWeavingLog(@RequestBody WeavingEntryRequest request, Principal principal) {
+        String result = dataEntryService.recordWeavingData(request, principal.getName());
+        return ResponseEntity.ok(result);
+    }
 
-        // 1. 从 Spring Security 的上下文中自动提取当前发起请求的真实用户名
-        // 只要能走到这一行，说明 JWT 令牌绝对是合法的，这里的名字绝对不可能造假。
-        String currentUser = principal.getName();
+    @PostMapping("/coextrusion/logs")
+    @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> submitCoexLog(@RequestBody CoexEntryRequest request, Principal principal) {
+        String result = dataEntryService.recordCoexData(request, principal.getName());
+        return ResponseEntity.ok(result);
+    }
 
-        // 2. 将这个真实的用户名传递给大脑 (Service 层)
-        String result = dataEntryService.recordDailyProduction(request, currentUser);
-
-        return ResponseEntity.ok(result + " 操作已留痕，记录人：" + currentUser);
+    @PostMapping("/inventory/adjust")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> adjustInventory(@RequestBody InventoryAdjustRequest request, Principal principal) {
+        String result = dataEntryService.manualAdjustInventory(request, principal.getName());
+        return ResponseEntity.ok(result);
     }
 }
