@@ -18,11 +18,17 @@ public class EstimationController {
         this.estimationService = estimationService;
     }
 
-    // 🌟 将查询改为 POST，以接收各车间负责人的人工微调参数
-    @PostMapping("/advanced-schedule")
+    // 🌟 第一阶段：纯草稿推演
+    @PostMapping("/preview")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<?> getAdvancedSchedule(@RequestBody ScheduleAdjustmentRequest request, Principal principal) {
-        Map<String, Object> result = estimationService.calculateAdvancedSchedule(request, principal.getName());
-        return ResponseEntity.ok(result);
+    public ResponseEntity<?> preview(@RequestBody ScheduleAdjustmentRequest request, Principal principal) {
+        return ResponseEntity.ok(estimationService.previewSchedule(request, principal.getName()));
+    }
+
+    // 🌟 第二阶段：接收人类修改后的确认版并落库
+    @PostMapping("/commit")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> commit(@RequestBody Map<String, Object> finalPayload, Principal principal) {
+        return ResponseEntity.ok(estimationService.commitFinalSchedule(finalPayload, principal.getName()));
     }
 }

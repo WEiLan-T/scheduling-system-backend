@@ -47,6 +47,7 @@
         </div>
 
         <div style="display: flex; flex: 1; overflow: hidden;">
+
             <div style="width: 240px; background: white; border-right: 1px solid #e2e8f0; overflow-y: auto;">
                 <el-menu :default-active="activeMenu" @select="handleMenuSelect">
                     <el-menu-item-group title="现场执行层 (MES)">
@@ -56,9 +57,7 @@
                     </el-menu-item-group>
                     <el-menu-item-group title="计划指挥层 (APS)">
                         <el-menu-item index="order"><span>🛒 销售订单统一下达</span></el-menu-item>
-                        <el-menu-item index="weaving_plan"><span>🧶 织造车间排产干预</span></el-menu-item>
-                        <el-menu-item index="coex_plan"><span>🗜️ 共挤车间排产干预</span></el-menu-item>
-                        <el-menu-item index="estimation"><span>📊 全局排产大盘日历</span></el-menu-item>
+                        <el-menu-item index="estimation"><span>📊 智能排产指挥大盘</span></el-menu-item>
                     </el-menu-item-group>
                 </el-menu>
             </div>
@@ -199,63 +198,69 @@
                     </el-card>
                 </div>
 
-                <div v-show="activeMenu === 'weaving_plan'">
-                    <el-card shadow="hover" style="border-top: 4px solid #3b82f6;">
-                        <template #header><b style="font-size: 16px; color: #1e3a8a;">🧶 织造车间排产策略干预面板</b></template>
-                        <el-alert title="允许强制覆写系统计算的改机时间和人员排班参数。" type="info" show-icon style="margin-bottom: 20px;"></el-alert>
-                        <el-form :model="adjForm" label-width="140px" style="max-width: 600px;">
-                            <el-form-item label="待排产订单号"><el-input v-model="adjForm.orderId" placeholder="例如: ORD-001"></el-input></el-form-item>
-                            <el-form-item label="强制指定改机时间"><el-input-number v-model="adjForm.manualWeavingChangeoverDays" :min="0" :step="0.5"></el-input-number><span style="margin-left:10px;font-size:12px;color:#666;">(天)</span></el-form-item>
-                            <el-form-item label="强制指定人员排班"><el-input-number v-model="adjForm.manualOperatorRatio" :min="0.5" :step="0.5"></el-input-number><span style="margin-left:10px;font-size:12px;color:#666;">(台/人)</span></el-form-item>
-                            <el-form-item><el-button type="primary" @click="submitAdvancedEstimation" :loading="loading">覆写参数并重排织造计划</el-button></el-form-item>
-                        </el-form>
-                    </el-card>
-                </div>
-
-                <div v-show="activeMenu === 'coex_plan'">
-                    <el-card shadow="hover" style="border-top: 4px solid #f97316;">
-                        <template #header><b style="font-size: 16px; color: #9a3412;">🗜️ 共挤车间排产策略干预面板</b></template>
-                        <el-alert title="允许强制调控倒推开机延时天数以确保带坯充足防停机。" type="warning" show-icon style="margin-bottom: 20px;"></el-alert>
-                        <el-form :model="adjForm" label-width="140px" style="max-width: 600px;">
-                            <el-form-item label="待排产订单号"><el-input v-model="adjForm.orderId"></el-input></el-form-item>
-                            <el-form-item label="覆盖产线标准产能"><el-input-number v-model="adjForm.manualCoexCapacity" :min="100"></el-input-number></el-form-item>
-                            <el-form-item label="安全开机延时设定"><el-input-number v-model="adjForm.manualStartDelayDays" :min="1"></el-input-number><span style="margin-left:10px;font-size:12px;color:#666;">(天)</span></el-form-item>
-                            <el-form-item><el-button type="warning" @click="submitAdvancedEstimation" :loading="loading">覆写参数并重排共挤计划</el-button></el-form-item>
-                        </el-form>
-                    </el-card>
-                </div>
-
                 <div v-show="activeMenu === 'estimation'">
                     <el-card shadow="hover">
-                        <template #header><b style="font-size: 16px; color: #10b981;">📊 订单全局排产与可视化日历</b></template>
+                        <template #header><b style="font-size: 16px; color: #10b981;">📊 全流水线智能排产指挥大盘 (草稿干预中心)</b></template>
                         <el-form :inline="true" :model="estForm">
-                            <el-form-item label="生产订单号"><el-input v-model="estForm.orderId" placeholder="请输入已下达的订单号..."></el-input></el-form-item>
-                            <el-form-item><el-button type="success" @click="submitAdvancedEstimation" :loading="loading">📅 生成排产日历</el-button></el-form-item>
+                            <el-form-item label="生产订单号"><el-input v-model="estForm.orderId" placeholder="例如输入: ORD-001"></el-input></el-form-item>
+                            <el-form-item><el-button type="success" @click="fetchInitialDraft" :loading="loading">1. 生成初始排产草稿</el-button></el-form-item>
                         </el-form>
 
                         <div v-if="estResult">
-                            <el-alert :title="`订单 ${estResult.orderId} 排产规划完成`" type="success" :description="`总耗时：${estResult.totalDays} 天 (从 ${estResult.overallStartDate} 至 ${estResult.overallEndDate})。`" show-icon style="margin-bottom: 20px;"></el-alert>
+                            <el-alert :title="`订单 ${estResult.orderId} 草稿就绪`" type="warning" description="单产品精细控制：您可以在下方修改某一行的工艺参数并点击【重算】，或者直接涂改排产日期。核对无误后请批准发布落库。" show-icon style="margin-bottom: 15px;"></el-alert>
+
+                            <div style="margin-bottom: 15px;">
+                                <el-button type="warning" plain icon="Refresh" @click="recalculateDraft" :loading="loading">2. 根据表格中的【算法干预参数】重新推演日期</el-button>
+                            </div>
+
                             <el-row :gutter="20">
-                                <el-col :span="11">
-                                    <el-table :data="estResult.details" border size="small">
-                                        <el-table-column prop="finishedPartNumber" label="成品零件"></el-table-column>
-                                        <el-table-column label="车间分配" width="100">
+                                <el-col :span="14">
+                                    <el-table :data="estResult.details" border size="small" style="width: 100%">
+                                        <el-table-column prop="finishedPartNumber" label="成品零件" width="90"></el-table-column>
+
+                                        <el-table-column label="算法干预参数 (修改后请点上方重算)" width="180">
                                             <template #default="scope">
-                                                <div style="font-size: 11px; color: #64748b; line-height: 1.4;">
-                                                    织: {{ scope.row.weavingWorkshop }}<br>
-                                                    挤: <span style="color:#f97316">{{ scope.row.coexWorkshop }}</span>
+                                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom:4px;">
+                                                    <span style="font-size:11px;color:#666;">改机(天):</span>
+                                                    <el-input-number v-model="scope.row.changeoverDays" size="small" controls-position="right" style="width:90px;"></el-input-number>
+                                                </div>
+                                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom:4px;">
+                                                    <span style="font-size:11px;color:#666;">共挤产能:</span>
+                                                    <el-input-number v-model="scope.row.coexCapacity" size="small" controls-position="right" :step="50" style="width:90px;"></el-input-number>
+                                                </div>
+                                                <div style="display: flex; align-items: center; justify-content: space-between;">
+                                                    <span style="font-size:11px;color:#666;">开机延时:</span>
+                                                    <el-input-number v-model="scope.row.startDelay" size="small" controls-position="right" style="width:90px;"></el-input-number>
                                                 </div>
                                             </template>
                                         </el-table-column>
-                                        <el-table-column label="织造期">
-                                            <template #default="scope"><span style="color: #3b82f6">{{ scope.row.weavingStart ? scope.row.weavingStart.slice(5) + ' 至 ' + scope.row.weavingEnd.slice(5) : '库存充足' }}</span></template>
+
+                                        <el-table-column label="织造排期 (允许强改)" width="120">
+                                            <template #default="scope">
+                                                <div v-if="scope.row.weavingStart" style="display:flex; flex-direction:column; gap:4px;">
+                                                    <el-date-picker v-model="scope.row.weavingStart" type="date" value-format="YYYY-MM-DD" size="small" style="width:100%;"></el-date-picker>
+                                                    <el-date-picker v-model="scope.row.weavingEnd" type="date" value-format="YYYY-MM-DD" size="small" style="width:100%;"></el-date-picker>
+                                                </div>
+                                                <el-tag v-else type="success" size="small">免织造</el-tag>
+                                            </template>
                                         </el-table-column>
-                                        <el-table-column label="共挤期">
-                                            <template #default="scope"><span style="color: #f97316">{{ scope.row.coexStart.slice(5) }} 至 {{ scope.row.coexEnd.slice(5) }}</span></template>
+
+                                        <el-table-column label="共挤排期 (允许强改)" width="120">
+                                            <template #default="scope">
+                                                <div style="display:flex; flex-direction:column; gap:4px;">
+                                                    <el-date-picker v-model="scope.row.coexStart" type="date" value-format="YYYY-MM-DD" size="small" style="width:100%;"></el-date-picker>
+                                                    <el-date-picker v-model="scope.row.coexEnd" type="date" value-format="YYYY-MM-DD" size="small" style="width:100%;"></el-date-picker>
+                                                </div>
+                                            </template>
                                         </el-table-column>
                                     </el-table>
+
+                                    <div style="margin-top: 20px; text-align: right;">
+                                        <el-button type="danger" size="large" icon="Checked" @click="commitFinalScheduleToDb">3. 盖章复核无误，批准排产单入库</el-button>
+                                    </div>
                                 </el-col>
-                                <el-col :span="13">
+
+                                <el-col :span="10">
                                     <el-calendar v-model="calendarDate" style="border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
                                         <template #date-cell="{ data }">
                                             <div style="height: 100%; display: flex; flex-direction: column;">
@@ -275,8 +280,7 @@
                 </div>
 
             </div>
-        </div>
-    </div>
+        </div> </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"></script>

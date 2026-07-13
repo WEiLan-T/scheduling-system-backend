@@ -152,7 +152,6 @@ const app = createApp({
             }
         };
 
-        // 监听侧边栏，如果进入库存页面，则自动刷新表格
         watch(activeMenu, (newVal) => {
             if (newVal === 'inventory') { loadInventory(); }
         });
@@ -179,31 +178,52 @@ const app = createApp({
         };
 
         // ==========================================
-        // 📊 APS 大脑：全流水线联动排产推演引擎
+        // 📊 APS 大脑：单品细粒度干预 + 人机协同双阶推演
         // ==========================================
         const adjForm = reactive({ orderId: '', manualWeavingChangeoverDays: null, manualOperatorRatio: null, manualCoexCapacity: null, manualStartDelayDays: null });
         const estForm = reactive({ orderId: '' });
         const estResult = ref(null);
         const calendarDate = ref(new Date());
 
-        const submitAdvancedEstimation = async () => {
-            const targetOrderId = activeMenu.value === 'estimation' ? estForm.orderId : adjForm.orderId;
-            if (!targetOrderId) { ElMessage.warning('请输入待排产的订单号！'); return; }
-
+        const fetchInitialDraft = async () => {
+            if (!estForm.orderId) { ElMessage.warning('请输入待排产的订单号！'); return; }
             loading.value = true; estResult.value = null;
             try {
-                const payload = activeMenu.value === 'estimation'
-                    ? { orderId: targetOrderId }
-                    : { ...adjForm, orderId: targetOrderId };
-
-                const res = await axios.post('/api/v1/workshops/estimation/advanced-schedule', payload);
+                const res = await axios.post('/api/v1/workshops/estimation/preview', { orderId: estForm.orderId });
                 estResult.value = res.data;
-
                 if (res.data.overallStartDate) { calendarDate.value = new Date(res.data.overallStartDate); }
-                ElMessage.success('APS 大脑重算完成，日历渲染就绪！');
-
-                if(activeMenu.value !== 'estimation') { activeMenu.value = 'estimation'; estForm.orderId = targetOrderId; }
+                ElMessage.info('初始排产草稿已就绪，可对每一行产品进行独立微调！');
             } catch (error) {} finally { loading.value = false; }
+        };
+
+        const recalculateDraft = async () => {
+            if (!estResult.value || !estResult.value.details) return;
+            loading.value = true;
+            try {
+                const payload = {
+                    orderId: estResult.value.orderId,
+                    itemAdjustments: estResult.value.details.map(row => ({
+                        finishedPartNumber: row.finishedPartNumber,
+                        manualWeavingChangeoverDays: row.changeoverDays,
+                        manualCoexCapacity: row.coexCapacity,
+                        manualStartDelayDays: row.startDelay
+                    }))
+                };
+
+                const res = await axios.post('/api/v1/workshops/estimation/preview', payload);
+                estResult.value = res.data;
+                ElMessage.success('基于您指定的每行参数，排产日历已重新排布！');
+            } catch(error) {} finally { loading.value = false; }
+        };
+
+        const commitFinalScheduleToDb = async () => {
+            if (!estResult.value) return;
+            try {
+                await ElMessageBox.confirm('系统将以您当前表格里显示的具体日期为准下发车间执行，确认落库？', '排产复核', { confirmButtonText: '批准发布', type: 'success' });
+                const res = await axios.post('/api/v1/workshops/estimation/commit', estResult.value);
+                ElMessage.success(res.data);
+                estResult.value = null;
+            } catch (error) { if (error !== 'cancel') ElMessage.error('落库被拒绝'); }
         };
 
         const getCalendarTags = (dateStr) => {
@@ -211,31 +231,24 @@ const app = createApp({
             const tags = [];
             estResult.value.details.forEach(item => {
                 const isWeaving = item.weavingStart && dateStr >= item.weavingStart && dateStr <= item.weavingEnd;
-                const isCoex = dateStr >= item.coexStart && dateStr <= item.coexEnd;
-
-                if (isWeaving && isCoex) {
-                    tags.push({ text: '织造+共挤', color: '#8b5cf6' });
-                } else if (isWeaving) {
-                    tags.push({ text: '织造期', color: '#3b82f6' });
-                } else if (isCoex) {
-                    tags.push({ text: '共挤期', color: '#f97316' });
-                }
+                const isCoex = item.coexStart && dateStr >= item.coexStart && dateStr <= item.coexEnd;
+                if (isWeaving && isCoex) { tags.push({ text: '织造+共挤', color: '#8b5cf6' }); }
+                else if (isWeaving) { tags.push({ text: '织造期', color: '#3b82f6' }); }
+                else if (isCoex) { tags.push({ text: '共挤期', color: '#f97316' }); }
             });
             const uniqueTags = [];
             const seen = new Set();
-            for (const tag of tags) {
-                if (!seen.has(tag.text)) { seen.add(tag.text); uniqueTags.push(tag); }
-            }
+            for (const tag of tags) { if (!seen.has(tag.text)) { seen.add(tag.text); uniqueTags.push(tag); } }
             return uniqueTags;
         };
 
-        // 将所有用到的变量暴露给模板视图
+        // 🌟 就是因为之前这里漏掉了闭合括号导致了报错！
         return {
             isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect,
             weavingForm, submitWeaving, coexForm, submitCoex, entryResult,
             invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv,
             orderHeader, orderItems, orderResult, calcTotal, addOrderItem, removeOrderItem, submitOrder,
-            estForm, adjForm, estResult, submitAdvancedEstimation, calendarDate, getCalendarTags
+            estForm, adjForm, estResult, fetchInitialDraft, recalculateDraft, commitFinalScheduleToDb, calendarDate, getCalendarTags
         };
     }
 });

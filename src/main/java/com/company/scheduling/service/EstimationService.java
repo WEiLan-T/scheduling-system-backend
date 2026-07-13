@@ -18,189 +18,207 @@ public class EstimationService {
     private final MasterProductionPlanRepo planRepo;
     private final EstimatedProductionScheduleRepo scheduleRepo;
     private final ProductionOrderRepo orderRepo;
-    private final VirtualWarehouseRepo warehouseRepo; // 🌟 引入虚拟库存依赖
+    private final VirtualWarehouseRepo warehouseRepo;
     private final WeavingDailyLogRepo weavingLogRepo;
 
-    public EstimationService(MasterProductionPlanRepo planRepo,
-                             EstimatedProductionScheduleRepo scheduleRepo,
-                             ProductionOrderRepo orderRepo,
-                             VirtualWarehouseRepo warehouseRepo,
-                             WeavingDailyLogRepo weavingLogRepo) { // 🌟 修改构造函数
-        this.planRepo = planRepo;
-        this.scheduleRepo = scheduleRepo;
-        this.orderRepo = orderRepo;
-        this.warehouseRepo = warehouseRepo;
-        this.weavingLogRepo = weavingLogRepo;
+    public EstimationService(MasterProductionPlanRepo planRepo, EstimatedProductionScheduleRepo scheduleRepo,
+                             ProductionOrderRepo orderRepo, VirtualWarehouseRepo warehouseRepo, WeavingDailyLogRepo weavingLogRepo) {
+        this.planRepo = planRepo; this.scheduleRepo = scheduleRepo; this.orderRepo = orderRepo;
+        this.warehouseRepo = warehouseRepo; this.weavingLogRepo = weavingLogRepo;
     }
 
-    @Transactional
-    public Map<String, Object> calculateAdvancedSchedule(ScheduleAdjustmentRequest req, String currentUser) {
+    // 🌟 新增：有限产能排队账本 (Capacity Ledger)
+    private static class CapacityLedger {
+        LocalDate nextAvailableWeavingDate;
+        LocalDate nextAvailableCoexDate;
+    }
+
+    // ==========================================
+    // 🌟 阶段一：带【排队账本】的纯草稿推演
+    // ==========================================
+    public Map<String, Object> previewSchedule(ScheduleAdjustmentRequest req, String currentUser) {
         List<ProductionOrder> orders = orderRepo.findByOrderId(req.getOrderId());
-        if (orders == null || orders.isEmpty()) {
-            throw new RuntimeException("查无此订单，请核对订单号！");
-        }
+        if (orders == null || orders.isEmpty()) throw new RuntimeException("查无此订单，请核对订单号！");
+
+        // 1. 初始化产能账本：读取数据库现有的极值日期
+        CapacityLedger ledger = new CapacityLedger();
+        LocalDate dbMaxWeaving = scheduleRepo.findMaxWeavingEndDate();
+        ledger.nextAvailableWeavingDate = (dbMaxWeaving != null && dbMaxWeaving.isAfter(LocalDate.now()))
+                ? dbMaxWeaving : LocalDate.now();
+
+        LocalDate dbMaxCoex = scheduleRepo.findMaxCoexEndDate();
+        ledger.nextAvailableCoexDate = (dbMaxCoex != null && dbMaxCoex.isAfter(LocalDate.now()))
+                ? dbMaxCoex : LocalDate.now();
 
         LocalDate overallStartDate = LocalDate.MAX;
         LocalDate overallEndDate = LocalDate.MIN;
         List<Map<String, Object>> itemSchedules = new ArrayList<>();
-        String planId = "PLAN-V4-" + System.currentTimeMillis();
 
-        MasterProductionPlan plan = new MasterProductionPlan();
-        plan.setPlanId(planId);
-        plan.setOrderId(req.getOrderId());
-        plan.setEnteredBy(currentUser);
-        planRepo.save(plan);
-
+        // 2. 游标推演循环：同一订单内的多个产品也会自动排队
         for (ProductionOrder item : orders) {
             BigDecimal finishedMeters = item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
-
-            // 细则4：10% 冗余带坯损耗
             BigDecimal tapeMetersNeeded = finishedMeters.multiply(new BigDecimal("1.10"));
             String tapePartNumber = item.getFinishedPartNumber() + "-TP";
 
-            // 🌟 细则1：从底层数据库真实读取虚拟库存
             VirtualWarehouse wh = warehouseRepo.findByTapePartNumber(tapePartNumber).orElse(null);
             BigDecimal currentInventory = wh != null && wh.getCurrentStockMeters() != null ? wh.getCurrentStockMeters() : BigDecimal.ZERO;
-
-            // 计算缺口
             BigDecimal shortfall = tapeMetersNeeded.subtract(currentInventory).max(BigDecimal.ZERO);
 
-            // 🧶 织造算法：只排产缺口部分
-            ScheduleDates weavingDates = weavingSchedulingAlgorithm(tapePartNumber, shortfall, req);
+            ScheduleAdjustmentRequest.ItemAdjustment itemAdj = null;
+            if (req.getItemAdjustments() != null) {
+                itemAdj = req.getItemAdjustments().stream()
+                        .filter(a -> a.getFinishedPartNumber().equals(item.getFinishedPartNumber()))
+                        .findFirst().orElse(null);
+            }
 
-            // 🗜️ 共挤算法：依据库存满足度与车间映射进行排产
-            ScheduleDates coexDates = coextrusionSchedulingAlgorithm(item.getFinishedPartNumber(), finishedMeters, tapeMetersNeeded, currentInventory, weavingDates, req);
+            // 传入账本进行推演
+            ScheduleDates wDates = weavingSchedulingAlgorithm(tapePartNumber, shortfall, itemAdj, ledger);
+            ScheduleDates cDates = coextrusionSchedulingAlgorithm(finishedMeters, tapeMetersNeeded, currentInventory, wDates, itemAdj, ledger);
 
-            LocalDate currentItemStart = weavingDates.startDate != null ? weavingDates.startDate : coexDates.startDate;
+            LocalDate currentItemStart = wDates.startDate != null ? wDates.startDate : cDates.startDate;
             if (currentItemStart.isBefore(overallStartDate)) overallStartDate = currentItemStart;
-            if (coexDates.endDate.isAfter(overallEndDate)) overallEndDate = coexDates.endDate;
+            if (cDates.endDate.isAfter(overallEndDate)) overallEndDate = cDates.endDate;
 
-            saveScheduleRecord(planId, req.getOrderId(), item.getFinishedPartNumber(), tapePartNumber, weavingDates, coexDates, currentItemStart, currentUser);
-            itemSchedules.add(buildItemView(item.getFinishedPartNumber(), weavingDates, coexDates));
+            itemSchedules.add(buildDraftView(item.getFinishedPartNumber(), tapePartNumber, wDates, cDates));
         }
 
-        long totalDays = ChronoUnit.DAYS.between(overallStartDate, overallEndDate) + 1;
+        Map<String, Object> draft = new HashMap<>();
+        draft.put("orderId", req.getOrderId());
+        draft.put("overallStartDate", overallStartDate.toString());
+        draft.put("overallEndDate", overallEndDate.toString());
+        draft.put("totalDays", ChronoUnit.DAYS.between(overallStartDate, overallEndDate) + 1);
+        draft.put("details", itemSchedules);
 
-        Map<String, Object> result = new HashMap<>();
-        result.put("orderId", req.getOrderId());
-        result.put("overallStartDate", overallStartDate.toString());
-        result.put("overallEndDate", overallEndDate.toString());
-        result.put("totalDays", totalDays);
-        result.put("details", itemSchedules);
-
-        return result;
+        return draft;
     }
 
     // ==========================================
-    // 🧶 织造排产算法 (保留改机与人员参数)
+    // 🌟 阶段二：人类盖章确认 (固化落库)
     // ==========================================
-    private ScheduleDates weavingSchedulingAlgorithm(String tapePartNumber, BigDecimal targetQty, ScheduleAdjustmentRequest req) {
-        ScheduleDates dates = new ScheduleDates();
-        dates.workshopId = "织造1车间";
+    @Transactional
+    @SuppressWarnings("unchecked")
+    public String commitFinalSchedule(Map<String, Object> finalPayload, String currentUser) {
+        String orderId = (String) finalPayload.get("orderId");
+        String planId = "PLAN-FINAL-" + System.currentTimeMillis();
 
+        MasterProductionPlan plan = new MasterProductionPlan();
+        plan.setPlanId(planId); plan.setOrderId(orderId); plan.setEnteredBy(currentUser);
+        planRepo.save(plan);
+
+        List<Map<String, Object>> details = (List<Map<String, Object>>) finalPayload.get("details");
+        for (Map<String, Object> row : details) {
+            EstimatedProductionSchedule es = new EstimatedProductionSchedule();
+            es.setPlanId(planId); es.setOrderId(orderId);
+            es.setFinishedPartNumber((String) row.get("finishedPartNumber"));
+            es.setTapePartNumber((String) row.get("tapePartNumber"));
+
+            if (row.get("weavingStart") != null && !row.get("weavingStart").toString().trim().isEmpty()) {
+                es.setWeavingStartDate(LocalDate.parse((String) row.get("weavingStart")));
+                es.setWeavingEndDate(LocalDate.parse((String) row.get("weavingEnd")));
+            }
+            es.setCoexStartDate(LocalDate.parse((String) row.get("coexStart")));
+            es.setCoexEndDate(LocalDate.parse((String) row.get("coexEnd")));
+
+            LocalDate start = es.getWeavingStartDate() != null ? es.getWeavingStartDate() : es.getCoexStartDate();
+            es.setEstimatedTotalDays(new BigDecimal(ChronoUnit.DAYS.between(start, es.getCoexEndDate()) + 1));
+            es.setEnteredBy(currentUser);
+            scheduleRepo.save(es);
+        }
+        return "🎯 经计划员复核，排产规划单 " + planId + " 已成功落库下发！";
+    }
+
+    // ==========================================
+    // 🧶 织造底层算法：排队避让 + 改机
+    // ==========================================
+    private ScheduleDates weavingSchedulingAlgorithm(String tapePartNumber, BigDecimal targetQty, ScheduleAdjustmentRequest.ItemAdjustment adj, CapacityLedger ledger) {
+        ScheduleDates dates = new ScheduleDates(); dates.workshopId = "织造1车间";
         if (targetQty.compareTo(BigDecimal.ZERO) == 0) return dates;
 
-        String currentTapeOnMachine = "8D1001";
-
-        // 🌟 核心升级：调取生产该带坯的机台的真实日产能
-        BigDecimal standardDailyCapacity = new BigDecimal("250"); // 兜底保底产能
+        BigDecimal standardDailyCapacity = new BigDecimal("250");
         Optional<WeavingDailyLog> latestLog = weavingLogRepo.findFirstByTapePartNumberOrderByEntryDateDesc(tapePartNumber);
-        if (latestLog.isPresent() && latestLog.get().getCapacityPerDay() != null && latestLog.get().getCapacityPerDay().compareTo(BigDecimal.ZERO) > 0) {
-            standardDailyCapacity = latestLog.get().getCapacityPerDay(); // 提取真实历史数据！
+        if (latestLog.isPresent() && latestLog.get().getCapacityPerDay() != null) {
+            standardDailyCapacity = latestLog.get().getCapacityPerDay();
         }
 
-        BigDecimal changeoverDays = req.getManualWeavingChangeoverDays() != null
-                ? req.getManualWeavingChangeoverDays()
-                : (currentTapeOnMachine.charAt(0) != tapePartNumber.charAt(0) ? new BigDecimal("2") : new BigDecimal("1"));
+        BigDecimal changeoverDays = (adj != null && adj.getManualWeavingChangeoverDays() != null)
+                ? adj.getManualWeavingChangeoverDays() : new BigDecimal("1");
+        dates.algoChangeoverDays = changeoverDays;
 
-        // 用真实的产能来计算所需天数
         int productionDays = targetQty.divide(standardDailyCapacity, RoundingMode.CEILING).intValue();
 
-        dates.startDate = LocalDate.now().plusDays(changeoverDays.intValue() + 1);
+        // 🌟 排队机制：在【织造账本现存极值】的基础上往后排
+        dates.startDate = ledger.nextAvailableWeavingDate.plusDays(changeoverDays.intValue() + 1);
         dates.endDate = dates.startDate.plusDays(productionDays > 0 ? productionDays - 1 : 0);
+
+        // 更新织造账本游标，供下一个订单排队
+        ledger.nextAvailableWeavingDate = dates.endDate;
 
         return dates;
     }
 
     // ==========================================
-    // 🗜️ 共挤排产算法 (库存条件分支 + 车间软映射)
+    // 🗜️ 共挤底层算法：防停机倒推 + 账本排队
     // ==========================================
-    private ScheduleDates coextrusionSchedulingAlgorithm(
-            String finishedPartNumber,
-            BigDecimal targetQty,
-            BigDecimal tapeMetersNeeded,
-            BigDecimal currentInventory,
-            ScheduleDates weavingDates,
-            ScheduleAdjustmentRequest req) {
-
+    private ScheduleDates coextrusionSchedulingAlgorithm(BigDecimal targetQty, BigDecimal tapeMetersNeeded, BigDecimal currentInventory, ScheduleDates wDates, ScheduleAdjustmentRequest.ItemAdjustment adj, CapacityLedger ledger) {
         ScheduleDates dates = new ScheduleDates();
+        dates.workshopId = wDates.workshopId != null && wDates.workshopId.contains("织造") ? wDates.workshopId.replace("织造", "共挤") : "共挤1车间";
 
-        // 🌟 细则2：车间软映射 (如 "织造1车间" 自动映射给 "共挤1车间")
-        String targetWorkshop = "共挤1车间"; // 默认兜底
-        if (weavingDates.workshopId != null && weavingDates.workshopId.contains("织造")) {
-            targetWorkshop = weavingDates.workshopId.replace("织造", "共挤");
-        }
-        dates.workshopId = targetWorkshop;
+        BigDecimal dailyCapacity = (adj != null && adj.getManualCoexCapacity() != null) ? adj.getManualCoexCapacity() : new BigDecimal("400");
+        int delay = (adj != null && adj.getManualStartDelayDays() != null) ? adj.getManualStartDelayDays() : 1;
+        dates.algoCoexCapacity = dailyCapacity; dates.algoDelayDays = delay;
 
-        BigDecimal dailyCapacity = req.getManualCoexCapacity() != null ? req.getManualCoexCapacity() : new BigDecimal("400");
         int coexDays = targetQty.divide(dailyCapacity, RoundingMode.CEILING).intValue();
         coexDays = coexDays > 0 ? coexDays - 1 : 0;
 
-        // 🌟 细则1：库存条件分支
         if (currentInventory.compareTo(tapeMetersNeeded) >= 0) {
-            // 分支 A：虚拟库存满足开工条件，无视织造，明日直接安排生产
-            dates.startDate = LocalDate.now().plusDays(1);
+            // 纯库存直开：排在【共挤账本极值】之后
+            dates.startDate = ledger.nextAvailableCoexDate.plusDays(1);
             dates.endDate = dates.startDate.plusDays(coexDays);
         } else {
-            // 分支 B：虚拟库存不足，查询织造“预计满足时间 (weavingDates.endDate)”，倒推防停机开工
-            if (weavingDates.endDate != null) {
-                int delay = req.getManualStartDelayDays() != null ? req.getManualStartDelayDays() : 1;
+            if (wDates.endDate != null) {
+                // 算法碰撞验证
+                LocalDate idealEndDate = wDates.endDate.plusDays(delay);
+                LocalDate idealStartDate = idealEndDate.minusDays(coexDays);
 
-                dates.endDate = weavingDates.endDate.plusDays(delay);
-                dates.startDate = dates.endDate.minusDays(coexDays);
-
-                // 安全兜底：共挤不可能早于织造开工
-                if (dates.startDate.isBefore(weavingDates.startDate)) {
-                    dates.startDate = weavingDates.startDate;
-                    dates.endDate = dates.startDate.plusDays(coexDays);
+                // 🌟 碰撞墙 1：不能早于共挤车间现有的排队极值 (机器被占)
+                if (idealStartDate.isBefore(ledger.nextAvailableCoexDate)) {
+                    idealStartDate = ledger.nextAvailableCoexDate.plusDays(1);
+                    idealEndDate = idealStartDate.plusDays(coexDays);
                 }
+                // 🌟 碰撞墙 2：不能早于织造开工时间 (带坯断料)
+                if (idealStartDate.isBefore(wDates.startDate)) {
+                    idealStartDate = wDates.startDate;
+                    idealEndDate = idealStartDate.plusDays(coexDays);
+                }
+
+                dates.startDate = idealStartDate;
+                dates.endDate = idealEndDate;
             } else {
-                // 异常兜底，强制明日开工
-                dates.startDate = LocalDate.now().plusDays(1);
+                dates.startDate = ledger.nextAvailableCoexDate.plusDays(1);
                 dates.endDate = dates.startDate.plusDays(coexDays);
             }
         }
+
+        // 更新共挤账本游标，供下一个订单排队
+        ledger.nextAvailableCoexDate = dates.endDate;
+
         return dates;
     }
 
-    // --- 内部数据结构与组装工具 ---
     private static class ScheduleDates {
-        LocalDate startDate;
-        LocalDate endDate;
-        String workshopId; // 新增车间记录
+        LocalDate startDate; LocalDate endDate; String workshopId;
+        BigDecimal algoChangeoverDays; BigDecimal algoCoexCapacity; Integer algoDelayDays;
     }
 
-    private void saveScheduleRecord(String pId, String oId, String fPn, String tPn, ScheduleDates w, ScheduleDates c, LocalDate s, String u) {
-        EstimatedProductionSchedule es = new EstimatedProductionSchedule();
-        es.setPlanId(pId); es.setOrderId(oId); es.setFinishedPartNumber(fPn); es.setTapePartNumber(tPn);
-        es.setWeavingStartDate(w.startDate); es.setWeavingEndDate(w.endDate);
-        es.setCoexStartDate(c.startDate); es.setCoexEndDate(c.endDate);
-        es.setEstimatedTotalDays(new BigDecimal(ChronoUnit.DAYS.between(s, c.endDate) + 1));
-        es.setEnteredBy(u);
-        scheduleRepo.save(es);
-    }
-
-    private Map<String, Object> buildItemView(String fPn, ScheduleDates w, ScheduleDates c) {
+    private Map<String, Object> buildDraftView(String fPn, String tPn, ScheduleDates w, ScheduleDates c) {
         Map<String, Object> m = new HashMap<>();
-        m.put("finishedPartNumber", fPn);
+        m.put("finishedPartNumber", fPn); m.put("tapePartNumber", tPn);
         m.put("weavingStart", w.startDate != null ? w.startDate.toString() : null);
         m.put("weavingEnd", w.endDate != null ? w.endDate.toString() : null);
-        m.put("coexStart", c.startDate.toString());
-        m.put("coexEnd", c.endDate.toString());
-
-        // 传递给前端展示分配的车间
+        m.put("coexStart", c.startDate.toString()); m.put("coexEnd", c.endDate.toString());
         m.put("weavingWorkshop", w.startDate != null ? w.workshopId : "无需织造");
         m.put("coexWorkshop", c.workshopId);
+        m.put("changeoverDays", w.algoChangeoverDays); m.put("coexCapacity", c.algoCoexCapacity); m.put("startDelay", c.algoDelayDays);
         return m;
     }
 }
