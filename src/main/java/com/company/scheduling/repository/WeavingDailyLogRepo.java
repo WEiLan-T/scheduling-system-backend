@@ -4,7 +4,10 @@ import com.company.scheduling.domain.WeavingDailyLog;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Optional;
+
 @Repository
 public interface WeavingDailyLogRepo extends JpaRepository<WeavingDailyLog, Integer> {
-    // 用于记录每日织造车间的带坯产出数据和需求总量
+    // 🌟 新增：获取某带坯最近一次的生产台账，用于排产大脑提取真实日产能
+    Optional<WeavingDailyLog> findFirstByTapePartNumberOrderByEntryDateDesc(String tapePartNumber);
 }

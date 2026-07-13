@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 @Service
 public class DataEntryService {
@@ -28,6 +29,9 @@ public class DataEntryService {
         this.warehouseRepo = warehouseRepo;
     }
 
+    // ==========================================
+    // 🧶 织造车间：状态更新 + 台账记录 + 库存增量同步
+    // ==========================================
     @Transactional
     public String recordWeavingData(WeavingEntryRequest req, String currentUser) {
         // 1. 拆解并更新机台状态
@@ -62,6 +66,9 @@ public class DataEntryService {
         return "✅ 织造数据录入成功！机台状态更新，带坯库存已自动增加。";
     }
 
+    // ==========================================
+    // 🗜️ 共挤车间：状态更新 + 台账记录 + 库存扣减同步
+    // ==========================================
     @Transactional
     public String recordCoexData(CoexEntryRequest req, String currentUser) {
         // 1. 拆解并更新产线状态
@@ -94,13 +101,16 @@ public class DataEntryService {
         return "✅ 共挤数据录入成功！产线状态更新，消耗带坯已自动扣除。";
     }
 
+    // ==========================================
+    // 📦 虚拟库存：人工极速调账干预 (历史遗留接口)
+    // ==========================================
     @Transactional
     public String manualAdjustInventory(InventoryAdjustRequest req, String currentUser) {
         updateVirtualWarehouse(req.getTapePartNumber(), req.getAdjustMeters(), req.getEntryDate(), currentUser);
         return "✅ 虚拟仓库数据人工调账成功！";
     }
 
-    // 内部方法：抽象化的库存加减处理器
+    // --- 内部封装：核心库存加减处理器 ---
     private void updateVirtualWarehouse(String tapePartNumber, BigDecimal changeMeters, LocalDate entryDate, String currentUser) {
         if (tapePartNumber == null || tapePartNumber.isEmpty() || changeMeters == null) return;
 
@@ -113,5 +123,44 @@ public class DataEntryService {
         warehouse.setEntryDate(entryDate);
         warehouse.setEnteredBy(currentUser);
         warehouseRepo.save(warehouse);
+    }
+
+    // ==========================================
+    // 🌟 全新升级：虚拟库存大盘完整 CRUD 控制台
+    // ==========================================
+
+    // 1. 列表查询与带坯模糊检索
+    public List<VirtualWarehouse> searchInventory(String keyword) {
+        if (keyword == null || keyword.trim().isEmpty()) {
+            return warehouseRepo.findAll();
+        }
+        return warehouseRepo.findByTapePartNumberContainingIgnoreCase(keyword);
+    }
+
+    // 2. 新增或修改库存数据卡片
+    @Transactional
+    public String saveOrUpdateInventory(VirtualWarehouse inv, String currentUser) {
+        if (inv.getId() != null) {
+            VirtualWarehouse existing = warehouseRepo.findById(inv.getId()).orElse(new VirtualWarehouse());
+            existing.setTapePartNumber(inv.getTapePartNumber());
+            existing.setFinishedPartNumber(inv.getFinishedPartNumber());
+            existing.setCurrentStockMeters(inv.getCurrentStockMeters());
+            existing.setEntryDate(inv.getEntryDate() != null ? inv.getEntryDate() : LocalDate.now());
+            existing.setEnteredBy(currentUser);
+            warehouseRepo.save(existing);
+            return "📦 库存档案信息修正成功！";
+        } else {
+            inv.setEnteredBy(currentUser);
+            if(inv.getEntryDate() == null) inv.setEntryDate(LocalDate.now());
+            warehouseRepo.save(inv);
+            return "📦 成功建立新的库存档案卡片！";
+        }
+    }
+
+    // 3. 物理销毁库存数据
+    @Transactional
+    public String deleteInventory(Integer id) {
+        warehouseRepo.deleteById(id);
+        return "⚠️ 数据条目已从物理磁盘永久销毁！";
     }
 }

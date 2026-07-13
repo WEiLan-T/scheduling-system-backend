@@ -7,7 +7,10 @@ import java.time.LocalDateTime;
 
 @Data @Entity @Table(name = "production_orders")
 public class ProductionOrder {
-    @Id private String orderId;
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Integer id; // 🌟 修复：使用自增 ID 作为主键，支持一单多品
+
+    private String orderId;
     private LocalDate deliveryDate;
     private LocalDate orderDate;
     private String placerName;
