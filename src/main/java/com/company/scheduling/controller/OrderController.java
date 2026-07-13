@@ -19,10 +19,27 @@ public class OrderController {
         this.orderService = orderService;
     }
 
+    @GetMapping("/list")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<List<ProductionOrder>> getAllOrders() {
+        return ResponseEntity.ok(orderService.getAllOrders());
+    }
+
     @PostMapping("/batch")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<String> submitOrders(@RequestBody List<ProductionOrder> orders, Principal principal) {
-        String result = orderService.saveOrders(orders, principal.getName());
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(orderService.saveOrders(orders, principal.getName()));
+    }
+
+    @PutMapping("/{orderId}")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> updateOrder(@PathVariable String orderId, @RequestBody List<ProductionOrder> orders, Principal principal) {
+        return ResponseEntity.ok(orderService.updateOrder(orderId, orders, principal.getName()));
+    }
+
+    @DeleteMapping("/{orderId}")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> deleteOrder(@PathVariable String orderId) {
+        return ResponseEntity.ok(orderService.deleteOrder(orderId));
     }
 }

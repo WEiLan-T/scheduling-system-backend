@@ -6,20 +6,18 @@ import java.time.LocalDate;
 
 @Data
 public class CoexEntryRequest {
-    // 【基础业务信息】
+    private Integer id; // 🌟 新增：记录ID，用于支持数据的修改
+
+    // 【以下保留您原本的所有字段，不要删除】
     private LocalDate entryDate;
-    private String finishedPartNumber; // 成品零件号
-
-    // 【产线现场状态表数据】
-    private String lineId;             // 产线号
-    private String workshopId;         // 车间号
-    private String caliberLimit;       // 口径限制
-    private String lineStatus;         // 产线状态
-
-    // 【每日台账数据】
-    private BigDecimal capacityPerDay; // 今日产能
-    private Boolean isDataNormal;      // 数据是否正常
-    private BigDecimal tapeDemandQty;  // 消耗带坯量 (用于自动扣除库存)
-    private String tapePartNumber;     // 消耗的带坯号
+    private String finishedPartNumber;
+    private String lineId;
+    private String workshopId;
+    private String caliberLimit;
+    private String lineStatus;
+    private BigDecimal capacityPerDay;
+    private Boolean isDataNormal;
+    private BigDecimal tapeDemandQty;
+    private String tapePartNumber;
     private String remarks;
 }

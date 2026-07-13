@@ -27,34 +27,33 @@ public class EstimationService {
         this.warehouseRepo = warehouseRepo; this.weavingLogRepo = weavingLogRepo;
     }
 
-    // 🌟 新增：有限产能排队账本 (Capacity Ledger)
-    private static class CapacityLedger {
-        LocalDate nextAvailableWeavingDate;
-        LocalDate nextAvailableCoexDate;
-    }
+    private static class CapacityLedger { LocalDate nextAvailableWeavingDate; LocalDate nextAvailableCoexDate; }
 
     // ==========================================
-    // 🌟 阶段一：带【排队账本】的纯草稿推演
+    // 🌟 阶段一：带【排队账本】和【离线模拟】的纯草稿推演
     // ==========================================
     public Map<String, Object> previewSchedule(ScheduleAdjustmentRequest req, String currentUser) {
-        List<ProductionOrder> orders = orderRepo.findByOrderId(req.getOrderId());
-        if (orders == null || orders.isEmpty()) throw new RuntimeException("查无此订单，请核对订单号！");
+        List<ProductionOrder> orders;
 
-        // 1. 初始化产能账本：读取数据库现有的极值日期
+        // 🌟 核心分流：如果前端传来了未落库的草稿明细，则直接使用它进行推演；否则从数据库里查
+        if (req.getDraftOrders() != null && !req.getDraftOrders().isEmpty()) {
+            orders = req.getDraftOrders();
+        } else {
+            orders = orderRepo.findByOrderId(req.getOrderId());
+            if (orders == null || orders.isEmpty()) throw new RuntimeException("查无此订单，请核对订单号！");
+        }
+
         CapacityLedger ledger = new CapacityLedger();
         LocalDate dbMaxWeaving = scheduleRepo.findMaxWeavingEndDate();
-        ledger.nextAvailableWeavingDate = (dbMaxWeaving != null && dbMaxWeaving.isAfter(LocalDate.now()))
-                ? dbMaxWeaving : LocalDate.now();
+        ledger.nextAvailableWeavingDate = (dbMaxWeaving != null && dbMaxWeaving.isAfter(LocalDate.now())) ? dbMaxWeaving : LocalDate.now();
 
         LocalDate dbMaxCoex = scheduleRepo.findMaxCoexEndDate();
-        ledger.nextAvailableCoexDate = (dbMaxCoex != null && dbMaxCoex.isAfter(LocalDate.now()))
-                ? dbMaxCoex : LocalDate.now();
+        ledger.nextAvailableCoexDate = (dbMaxCoex != null && dbMaxCoex.isAfter(LocalDate.now())) ? dbMaxCoex : LocalDate.now();
 
         LocalDate overallStartDate = LocalDate.MAX;
         LocalDate overallEndDate = LocalDate.MIN;
         List<Map<String, Object>> itemSchedules = new ArrayList<>();
 
-        // 2. 游标推演循环：同一订单内的多个产品也会自动排队
         for (ProductionOrder item : orders) {
             BigDecimal finishedMeters = item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
             BigDecimal tapeMetersNeeded = finishedMeters.multiply(new BigDecimal("1.10"));
@@ -66,14 +65,11 @@ public class EstimationService {
 
             ScheduleAdjustmentRequest.ItemAdjustment itemAdj = null;
             if (req.getItemAdjustments() != null) {
-                itemAdj = req.getItemAdjustments().stream()
-                        .filter(a -> a.getFinishedPartNumber().equals(item.getFinishedPartNumber()))
-                        .findFirst().orElse(null);
+                itemAdj = req.getItemAdjustments().stream().filter(a -> a.getFinishedPartNumber().equals(item.getFinishedPartNumber())).findFirst().orElse(null);
             }
 
-            // 传入账本进行推演
             ScheduleDates wDates = weavingSchedulingAlgorithm(tapePartNumber, shortfall, itemAdj, ledger);
-            ScheduleDates cDates = coextrusionSchedulingAlgorithm(finishedMeters, tapeMetersNeeded, currentInventory, wDates, itemAdj, ledger);
+            ScheduleDates cDates = coextrusionSchedulingAlgorithm(targetQtyToCoexAlgorithm(finishedMeters), tapeMetersNeeded, currentInventory, wDates, itemAdj, ledger);
 
             LocalDate currentItemStart = wDates.startDate != null ? wDates.startDate : cDates.startDate;
             if (currentItemStart.isBefore(overallStartDate)) overallStartDate = currentItemStart;
@@ -90,6 +86,10 @@ public class EstimationService {
         draft.put("details", itemSchedules);
 
         return draft;
+    }
+
+    private BigDecimal targetQtyToCoexAlgorithm(BigDecimal targetQty) {
+        return targetQty;
     }
 
     // ==========================================

@@ -1,9 +1,7 @@
 package com.company.scheduling.controller;
 
-import com.company.scheduling.domain.VirtualWarehouse;
-import com.company.scheduling.dto.CoexEntryRequest;
-import com.company.scheduling.dto.InventoryAdjustRequest;
-import com.company.scheduling.dto.WeavingEntryRequest;
+import com.company.scheduling.domain.*;
+import com.company.scheduling.dto.*;
 import com.company.scheduling.service.DataEntryService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -22,47 +20,63 @@ public class DataEntryController {
         this.dataEntryService = dataEntryService;
     }
 
-    // ================== 车间一线执行层接口 ==================
+    // ================== 🧶 织造执行层 ==================
+    @GetMapping("/weaving/logs/list")
+    @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
+    public ResponseEntity<List<WeavingDailyLog>> getWeavingLogs() {
+        return ResponseEntity.ok(dataEntryService.getWeavingLogs());
+    }
 
     @PostMapping("/weaving/logs")
     @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<String> submitWeavingLog(@RequestBody WeavingEntryRequest request, Principal principal) {
-        String result = dataEntryService.recordWeavingData(request, principal.getName());
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(dataEntryService.recordWeavingData(request, principal.getName()));
+    }
+
+    @DeleteMapping("/weaving/logs/{id}")
+    @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> deleteWeavingLog(@PathVariable Integer id, Principal principal) {
+        return ResponseEntity.ok(dataEntryService.deleteWeavingLog(id, principal.getName()));
+    }
+
+    // ================== 🗜️ 共挤执行层 ==================
+    @GetMapping("/coextrusion/logs/list")
+    @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
+    public ResponseEntity<List<CoexDailyLog>> getCoexLogs() {
+        return ResponseEntity.ok(dataEntryService.getCoexLogs());
     }
 
     @PostMapping("/coextrusion/logs")
     @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<String> submitCoexLog(@RequestBody CoexEntryRequest request, Principal principal) {
-        String result = dataEntryService.recordCoexData(request, principal.getName());
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(dataEntryService.recordCoexData(request, principal.getName()));
     }
 
-    // ================== 计划指挥层：库存大盘接口 ==================
+    @DeleteMapping("/coextrusion/logs/{id}")
+    @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> deleteCoexLog(@PathVariable Integer id, Principal principal) {
+        return ResponseEntity.ok(dataEntryService.deleteCoexLog(id, principal.getName()));
+    }
 
-    // 快捷调账接口 (保留兼容)
+    // ================== 📦 库存与调账 ==================
     @PostMapping("/inventory/adjust")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<String> adjustInventory(@RequestBody InventoryAdjustRequest request, Principal principal) {
-        String result = dataEntryService.manualAdjustInventory(request, principal.getName());
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(dataEntryService.manualAdjustInventory(request, principal.getName()));
     }
 
-    // 🌟 核心查询：获取库存列表 (所有人皆可查看)
     @GetMapping("/inventory/list")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_COEX_CLERK')")
     public ResponseEntity<List<VirtualWarehouse>> getInventoryList(@RequestParam(required = false) String keyword) {
         return ResponseEntity.ok(dataEntryService.searchInventory(keyword));
     }
 
-    // 🌟 核心建档：新增或修改库存记录 (限计划员和管理员)
     @PostMapping("/inventory/save")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<String> saveInventory(@RequestBody VirtualWarehouse inventory, Principal principal) {
         return ResponseEntity.ok(dataEntryService.saveOrUpdateInventory(inventory, principal.getName()));
     }
 
-    // 🌟 核心销毁：删除库存记录 (限计划员和管理员)
     @DeleteMapping("/inventory/{id}")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<String> deleteInventory(@PathVariable Integer id) {
