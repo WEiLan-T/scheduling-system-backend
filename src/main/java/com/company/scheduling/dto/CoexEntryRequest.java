@@ -6,9 +6,7 @@ import java.time.LocalDate;
 
 @Data
 public class CoexEntryRequest {
-    private Integer id; // 🌟 新增：记录ID，用于支持数据的修改
-
-    // 【以下保留您原本的所有字段，不要删除】
+    private Integer id;
     private LocalDate entryDate;
     private String finishedPartNumber;
     private String lineId;
@@ -19,5 +17,6 @@ public class CoexEntryRequest {
     private Boolean isDataNormal;
     private BigDecimal tapeDemandQty;
     private String tapePartNumber;
+    private String tapeNumber; // 🌟 新增：支持前端输入消耗的指定带坯编号
     private String remarks;
 }

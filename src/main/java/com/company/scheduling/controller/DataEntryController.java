@@ -82,4 +82,15 @@ public class DataEntryController {
     public ResponseEntity<String> deleteInventory(@PathVariable Integer id) {
         return ResponseEntity.ok(dataEntryService.deleteInventory(id));
     }
+    @GetMapping("/weaving/machines")
+    @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
+    public ResponseEntity<List<WeavingMachineStatus>> getMachines() {
+        return ResponseEntity.ok(dataEntryService.getAllWeavingMachines());
+    }
+
+    @GetMapping("/coextrusion/lines")
+    @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
+    public ResponseEntity<List<CoexLineStatus>> getLines() {
+        return ResponseEntity.ok(dataEntryService.getAllCoexLines());
+    }
 }

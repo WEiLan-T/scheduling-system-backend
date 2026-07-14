@@ -6,11 +6,10 @@ import java.time.LocalDate;
 
 @Data
 public class WeavingEntryRequest {
-    private Integer id; // 🌟 新增：记录ID，用于支持数据的修改
-
-    // 【以下保留您原本的所有字段，不要删除】
+    private Integer id;
     private LocalDate entryDate;
     private String tapePartNumber;
+    private String tapeNumber; // 🌟 新增：支持前端传入带坯编号
     private String machineId;
     private String workshopId;
     private String warpSpec;

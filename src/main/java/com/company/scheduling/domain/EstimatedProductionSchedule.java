@@ -18,6 +18,9 @@ public class EstimatedProductionSchedule {
     private LocalDate coexStartDate;
     private LocalDate coexEndDate;
     private BigDecimal estimatedTotalDays;
+    // 👇 新增：用于持久化保存计划员在草稿中分配的具体机台和产线
+    private String weavingMachineId;
+    private String coexLineId;
     private String enteredBy;
     private LocalDateTime createdAt = LocalDateTime.now();
 }

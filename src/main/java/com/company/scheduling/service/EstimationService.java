@@ -34,8 +34,6 @@ public class EstimationService {
     // ==========================================
     public Map<String, Object> previewSchedule(ScheduleAdjustmentRequest req, String currentUser) {
         List<ProductionOrder> orders;
-
-        // 🌟 核心分流：如果前端传来了未落库的草稿明细，则直接使用它进行推演；否则从数据库里查
         if (req.getDraftOrders() != null && !req.getDraftOrders().isEmpty()) {
             orders = req.getDraftOrders();
         } else {
@@ -57,9 +55,22 @@ public class EstimationService {
         for (ProductionOrder item : orders) {
             BigDecimal finishedMeters = item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
             BigDecimal tapeMetersNeeded = finishedMeters.multiply(new BigDecimal("1.10"));
-            String tapePartNumber = item.getFinishedPartNumber() + "-TP";
 
-            VirtualWarehouse wh = warehouseRepo.findByTapePartNumber(tapePartNumber).orElse(null);
+            // 🌟 核心修复3：不再粗暴地加 "-TP" 后缀，而是去虚拟库存（兼职 BOM 表）查询真实对应的带坯号
+            String tapePartNumber = item.getFinishedPartNumber(); // 兜底
+            List<VirtualWarehouse> bomMaps = warehouseRepo.findByFinishedPartNumber(item.getFinishedPartNumber());
+            VirtualWarehouse wh = null;
+
+            if (!bomMaps.isEmpty()) {
+                wh = bomMaps.get(0);
+                tapePartNumber = wh.getTapePartNumber(); // 找到真实映射的带坯号
+            } else {
+                // 如果成品号没查到，说明可能这单本身只下发了带坯（或人为强行输入了带坯），直接反查一次兜底
+                // 👇 将旧的 findByTapePartNumber 修改为 findFirstByTapePartNumber
+                wh = warehouseRepo.findFirstByTapePartNumber(item.getFinishedPartNumber()).orElse(null);
+                if(wh != null) tapePartNumber = wh.getTapePartNumber();
+            }
+
             BigDecimal currentInventory = wh != null && wh.getCurrentStockMeters() != null ? wh.getCurrentStockMeters() : BigDecimal.ZERO;
             BigDecimal shortfall = tapeMetersNeeded.subtract(currentInventory).max(BigDecimal.ZERO);
 
@@ -118,6 +129,14 @@ public class EstimationService {
             }
             es.setCoexStartDate(LocalDate.parse((String) row.get("coexStart")));
             es.setCoexEndDate(LocalDate.parse((String) row.get("coexEnd")));
+
+            // 👇 新增：将前端草稿中选择的机台与产线，持久化落库
+            if (row.get("plannedMachine") != null) {
+                es.setWeavingMachineId((String) row.get("plannedMachine"));
+            }
+            if (row.get("plannedLine") != null) {
+                es.setCoexLineId((String) row.get("plannedLine"));
+            }
 
             LocalDate start = es.getWeavingStartDate() != null ? es.getWeavingStartDate() : es.getCoexStartDate();
             es.setEstimatedTotalDays(new BigDecimal(ChronoUnit.DAYS.between(start, es.getCoexEndDate()) + 1));

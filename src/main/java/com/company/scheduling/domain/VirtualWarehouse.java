@@ -1,20 +1,19 @@
 package com.company.scheduling.domain;
+
 import jakarta.persistence.*;
 import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 @Data @Entity @Table(name = "virtual_warehouse")
 public class VirtualWarehouse {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer id;
-    private String finishedPartNumber;
+
     private String tapePartNumber;
+    private String tapeNumber; // 🌟 新增：物理带坯批次/编号
+    private String finishedPartNumber;
     private BigDecimal currentStockMeters;
-    private BigDecimal metersPerRoll;
-    private Integer rollCount;
     private LocalDate entryDate;
     private String enteredBy;
-    private LocalDateTime createdAt = LocalDateTime.now();
 }
