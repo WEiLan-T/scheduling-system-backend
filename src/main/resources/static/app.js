@@ -69,6 +69,7 @@ const app = createApp({
         // ==========================================
         const refreshCurrentPage = () => {
             if (activeMenu.value === 'weaving') { loadWeavingLogs(); ElMessage.success('🔄 织造历史台账同步刷新完成'); }
+            else if (activeMenu.value === 'process') { loadProcesses(); ElMessage.success('🔄 工艺路线参数配置库已同步刷新'); }
             else if (activeMenu.value === 'coex') { loadCoexLogs(); ElMessage.success('🔄 共挤历史台账同步刷新完成'); }
             else if (activeMenu.value === 'inventory') { loadInventory(); ElMessage.success('🔄 虚拟分批库存大盘已刷新'); }
             else if (activeMenu.value === 'order') { loadOrders(); ElMessage.success('🔄 销售合同档案订单库已刷新'); }
@@ -200,6 +201,91 @@ const app = createApp({
             } catch (e) {} finally { loading.value = false; }
         };
 
+        const processList = ref([]);
+        const processDialogVisible = ref(false);
+        const processForm = reactive({ id: null, finishedPartNumber: '', tapePartNumber: '', warpSpec: '', weftSpec: '' });
+
+        const loadProcesses = async () => {
+            try {
+                const res = await axios.get('/api/v1/workshops/integration/process/list');
+                processList.value = res.data;
+            } catch (e) {}
+        };
+
+        const openAddProcess = () => {
+            Object.assign(processForm, { id: null, finishedPartNumber: '', tapePartNumber: '', warpSpec: '', weftSpec: '' });
+            processDialogVisible.value = true;
+        };
+
+        const openEditProcess = (row) => {
+            Object.assign(processForm, row);
+            processDialogVisible.value = true;
+        };
+
+        const saveProcess = async () => {
+            if (!processForm.finishedPartNumber || !processForm.tapePartNumber) {
+                ElMessage.error('成品零件号与带坯零件号均不能为空！');
+                return;
+            }
+            try {
+                const res = await axios.post('/api/v1/workshops/integration/process/save', processForm);
+                ElMessage.success(res.data);
+                processDialogVisible.value = false;
+                loadProcesses();
+            } catch (e) {}
+        };
+
+        const deleteProcess = async (id) => {
+            try {
+                await ElMessageBox.confirm('解除该成品的工艺绑定关系后将影响排产反查，确认？', '警告', { type: 'warning' });
+                const res = await axios.delete(`/api/v1/workshops/integration/process/${id}`);
+                ElMessage.success(res.data);
+                loadProcesses();
+            } catch (e) {}
+        };
+
+        const processFileRef = ref(null);
+
+        // 1. 导出工艺文件
+        const exportProcessExcel = async () => {
+            try {
+                const response = await axios.get('/api/v1/workshops/integration/process/export', {
+                    responseType: 'blob' // 必须声明以 Blob 接收二进制流
+                });
+                const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const link = document.createElement('a');
+                link.href = window.URL.createObjectURL(blob);
+                link.download = '工艺路线数据大盘.xlsx';
+                link.click();
+                ElMessage.success('📥 工艺大盘导出成功！');
+            } catch (error) {
+                ElMessage.error('导出失败，请检查服务器！');
+            }
+        };
+
+        // 2. 导入工艺文件
+        const handleProcessImport = async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            loading.value = true;
+            try {
+                const response = await axios.post('/api/v1/workshops/integration/process/import', formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                });
+                ElMessage.success(response.data);
+                loadProcesses(); // 导入成功后刷新表格数据
+            } catch (error) {
+                // 错误已被拦截器提示
+            } finally {
+                loading.value = false;
+                event.target.value = ''; // 清空选择器以便下一次导入
+            }
+        };
+
         // ==========================================
         // 📊 智能排产大盘
         // ==========================================
@@ -259,6 +345,7 @@ const app = createApp({
             if (newVal === 'weaving') loadWeavingLogs();
             if (newVal === 'coex') loadCoexLogs();
             if (newVal === 'order') loadOrders();
+            if (newVal === 'process') loadProcesses();
         });
 
         // 🌟 提取织造机台档案信息，供排产看板显示
@@ -282,7 +369,9 @@ const app = createApp({
             coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm,
             invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv,
             orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, simulateOrder, simDialogVisible, simResult,
-            estForm, adjForm, estResult, fetchInitialDraft, recalculateDraft, commitFinalScheduleToDb, calendarDate, getCalendarTags,getMachineDetails, getLineDetails
+            estForm, adjForm, estResult, fetchInitialDraft, recalculateDraft, commitFinalScheduleToDb, calendarDate, getCalendarTags,getMachineDetails, getLineDetails,
+            processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses,
+            processFileRef, exportProcessExcel, handleProcessImport
         };
     }
 });

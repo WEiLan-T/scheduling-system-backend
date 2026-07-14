@@ -20,11 +20,13 @@ public class EstimationService {
     private final ProductionOrderRepo orderRepo;
     private final VirtualWarehouseRepo warehouseRepo;
     private final WeavingDailyLogRepo weavingLogRepo;
+    private final ProductProcessRepo processRepo;
 
     public EstimationService(MasterProductionPlanRepo planRepo, EstimatedProductionScheduleRepo scheduleRepo,
-                             ProductionOrderRepo orderRepo, VirtualWarehouseRepo warehouseRepo, WeavingDailyLogRepo weavingLogRepo) {
+                             ProductionOrderRepo orderRepo, VirtualWarehouseRepo warehouseRepo,
+                             WeavingDailyLogRepo weavingLogRepo, ProductProcessRepo processRepo) { // 👈 构造函数追加
         this.planRepo = planRepo; this.scheduleRepo = scheduleRepo; this.orderRepo = orderRepo;
-        this.warehouseRepo = warehouseRepo; this.weavingLogRepo = weavingLogRepo;
+        this.warehouseRepo = warehouseRepo; this.weavingLogRepo = weavingLogRepo; this.processRepo = processRepo;
     }
 
     private static class CapacityLedger { LocalDate nextAvailableWeavingDate; LocalDate nextAvailableCoexDate; }
@@ -56,22 +58,29 @@ public class EstimationService {
             BigDecimal finishedMeters = item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
             BigDecimal tapeMetersNeeded = finishedMeters.multiply(new BigDecimal("1.10"));
 
-            // 🌟 核心修复3：不再粗暴地加 "-TP" 后缀，而是去虚拟库存（兼职 BOM 表）查询真实对应的带坯号
-            String tapePartNumber = item.getFinishedPartNumber(); // 兜底
-            List<VirtualWarehouse> bomMaps = warehouseRepo.findByFinishedPartNumber(item.getFinishedPartNumber());
-            VirtualWarehouse wh = null;
+            // 🌟 核心重构：从专门的工艺表中反查带坯型号及工艺要求
+            String tapePartNumber = item.getFinishedPartNumber(); // 默认兜底
+            String warpSpec = "-";
+            String weftSpec = "-";
 
-            if (!bomMaps.isEmpty()) {
-                wh = bomMaps.get(0);
-                tapePartNumber = wh.getTapePartNumber(); // 找到真实映射的带坯号
-            } else {
-                // 如果成品号没查到，说明可能这单本身只下发了带坯（或人为强行输入了带坯），直接反查一次兜底
-                // 👇 将旧的 findByTapePartNumber 修改为 findFirstByTapePartNumber
-                wh = warehouseRepo.findFirstByTapePartNumber(item.getFinishedPartNumber()).orElse(null);
-                if(wh != null) tapePartNumber = wh.getTapePartNumber();
+            Optional<ProductProcess> processOpt = processRepo.findByFinishedPartNumber(item.getFinishedPartNumber());
+            if (processOpt.isPresent()) {
+                ProductProcess proc = processOpt.get();
+                tapePartNumber = proc.getTapePartNumber();
+                warpSpec = proc.getWarpSpec();
+                weftSpec = proc.getWeftSpec();
             }
 
-            BigDecimal currentInventory = wh != null && wh.getCurrentStockMeters() != null ? wh.getCurrentStockMeters() : BigDecimal.ZERO;
+            // 库存账本依然去虚拟仓库查（此时聚合查找该型号下所有批次的总库存）
+            List<VirtualWarehouse> warehouses = warehouseRepo.findByFinishedPartNumber(item.getFinishedPartNumber());
+            BigDecimal currentInventory = BigDecimal.ZERO;
+            if (!warehouses.isEmpty()) {
+                // 叠加多物理卷的总米数
+                currentInventory = warehouses.stream()
+                        .map(w -> w.getCurrentStockMeters() != null ? w.getCurrentStockMeters() : BigDecimal.ZERO)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+            }
+
             BigDecimal shortfall = tapeMetersNeeded.subtract(currentInventory).max(BigDecimal.ZERO);
 
             ScheduleAdjustmentRequest.ItemAdjustment itemAdj = null;
@@ -86,7 +95,8 @@ public class EstimationService {
             if (currentItemStart.isBefore(overallStartDate)) overallStartDate = currentItemStart;
             if (cDates.endDate.isAfter(overallEndDate)) overallEndDate = cDates.endDate;
 
-            itemSchedules.add(buildDraftView(item.getFinishedPartNumber(), tapePartNumber, wDates, cDates));
+            // 🌟 传入经纬线工艺要求到前台大盘
+            itemSchedules.add(buildDraftView(item.getFinishedPartNumber(), tapePartNumber, warpSpec, weftSpec, wDates, cDates));
         }
 
         Map<String, Object> draft = new HashMap<>();
@@ -229,9 +239,12 @@ public class EstimationService {
         BigDecimal algoChangeoverDays; BigDecimal algoCoexCapacity; Integer algoDelayDays;
     }
 
-    private Map<String, Object> buildDraftView(String fPn, String tPn, ScheduleDates w, ScheduleDates c) {
+    private Map<String, Object> buildDraftView(String fPn, String tPn, String warp, String weft, ScheduleDates w, ScheduleDates c) {
         Map<String, Object> m = new HashMap<>();
-        m.put("finishedPartNumber", fPn); m.put("tapePartNumber", tPn);
+        m.put("finishedPartNumber", fPn);
+        m.put("tapePartNumber", tPn);
+        m.put("warpSpec", warp); // 经线规范
+        m.put("weftSpec", weft); // 纬线规范
         m.put("weavingStart", w.startDate != null ? w.startDate.toString() : null);
         m.put("weavingEnd", w.endDate != null ? w.endDate.toString() : null);
         m.put("coexStart", c.startDate.toString()); m.put("coexEnd", c.endDate.toString());

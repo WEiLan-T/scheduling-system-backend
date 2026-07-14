@@ -6,6 +6,7 @@ import com.company.scheduling.service.DataEntryService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.security.Principal;
 import java.util.List;
@@ -92,5 +93,49 @@ public class DataEntryController {
     @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
     public ResponseEntity<List<CoexLineStatus>> getLines() {
         return ResponseEntity.ok(dataEntryService.getAllCoexLines());
+    }
+
+    @GetMapping("/process/list")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<List<ProductProcess>> getProcessList() {
+        return ResponseEntity.ok(dataEntryService.getAllProcesses());
+    }
+
+    @PostMapping("/process/save")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> saveProcess(@RequestBody ProductProcess process, Principal principal) {
+        return ResponseEntity.ok(dataEntryService.saveOrUpdateProcess(process, principal.getName()));
+    }
+
+    @DeleteMapping("/process/{id}")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> deleteProcess(@PathVariable Integer id) {
+        return ResponseEntity.ok(dataEntryService.deleteProcess(id));
+    }
+
+    @PostMapping("/process/import")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> importProcesses(@RequestParam("file") MultipartFile file, Principal principal) {
+        try {
+            String result = dataEntryService.importProcessExcel(file, principal.getName());
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Excel 导入失败，原因：" + e.getMessage());
+        }
+    }
+
+    @GetMapping("/process/export")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<byte[]> exportProcesses() {
+        try {
+            byte[] excelBytes = dataEntryService.exportProcessToExcel();
+            org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+            headers.setContentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+            headers.setContentDispositionFormData("attachment", "Product_Process_BOM.xlsx");
+            headers.setCacheControl("must-revalidate, post-check=0, pre-check=0");
+            return new ResponseEntity<>(excelBytes, headers, org.springframework.http.HttpStatus.OK);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(null);
+        }
     }
 }

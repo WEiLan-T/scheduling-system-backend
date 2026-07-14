@@ -49,6 +49,7 @@
                     </el-menu-item-group>
                     <el-menu-item-group title="APS">
                         <el-menu-item index="order"><span>🛒 销售订单统一下达</span></el-menu-item>
+                        <el-menu-item index="process"><span>⚙️ 工艺路线参数配置</span></el-menu-item>
                         <el-menu-item index="estimation"><span>📊 智能排产指挥大盘</span></el-menu-item>
                     </el-menu-item-group>
                 </el-menu>
@@ -266,6 +267,56 @@
                     </el-card>
                 </div>
 
+                <div v-show="activeMenu === 'process'">
+                    <el-card shadow="hover" style="border-top: 4px solid #8b5cf6;">
+                        <template #header>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <b style="font-size: 16px; color: #7c3aed;">⚙️ 全流水线工艺BOM与织造规范库</b>
+                                <div style="display: flex; gap: 10px;">
+                                    <el-button type="info" size="small" plain @click="exportProcessExcel">导出 Excel</el-button>
+
+                                    <input type="file" ref="processFileRef" style="display: none" @change="handleProcessImport" accept=".xlsx, .xls, .csv"/>
+                                    <el-button type="warning" size="small" plain @click="$refs.processFileRef.click()">导入 Excel</el-button>
+
+                                    <el-button type="success" size="small" @click="openAddProcess">建立新工艺纽带</el-button>
+                                </div>
+                            </div>
+                        </template>
+
+                        <el-table :data="processList" border stripe size="small" style="width: 100%">
+                            <el-table-column prop="id" label="工艺ID" width="80" align="center"></el-table-column>
+                            <el-table-column prop="finishedPartNumber" label="成品零件号">
+                                <template #default="scope"><b>{{ scope.row.finishedPartNumber }}</b></template>
+                            </el-table-column>
+                            <el-table-column prop="tapePartNumber" label="对应织造带坯号">
+                                <template #default="scope"><el-tag type="warning">{{ scope.row.tapePartNumber }}</el-tag></template>
+                            </el-table-column>
+                            <el-table-column prop="warpSpec" label="指定经线规格"></el-table-column>
+                            <el-table-column prop="weftSpec" label="指定纬线规格"></el-table-column>
+                            <el-table-column prop="enteredBy" label="工艺主设计师" width="120"></el-table-column>
+                            <el-table-column label="操作" width="140" align="center">
+                                <template #default="scope">
+                                    <el-button type="primary" size="small" plain @click="openEditProcess(scope.row)">修</el-button>
+                                    <el-button type="danger" size="small" plain @click="deleteProcess(scope.row.id)">解绑</el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+
+                        <el-dialog :title="processForm.id ? '🛠️ 修正产品工艺参数' : '➕ 建立全新产品工艺流向'" v-model="processDialogVisible" width="500px">
+                            <el-form :model="processForm" label-width="110px">
+                                <el-form-item label="成品零件号"><el-input v-model="processForm.finishedPartNumber" placeholder="例如: U25004" :disabled="!!processForm.id"></el-input></el-form-item>
+                                <el-form-item label="带坯零件号"><el-input v-model="processForm.tapePartNumber" placeholder="例如: 6D1504"></el-input></el-form-item>
+                                <el-form-item label="经线工艺规格"><el-input v-model="processForm.warpSpec" placeholder="例如: 1100D高强涤纶丝"></el-input></el-form-item>
+                                <el-form-item label="纬线工艺规格"><el-input v-model="processForm.weftSpec" placeholder="例如: 1680D加弹丝"></el-input></el-form-item>
+                            </el-form>
+                            <template #footer>
+                                <el-button @click="processDialogVisible = false">取消</el-button>
+                                <el-button type="primary" @click="saveProcess">确认维护入库</el-button>
+                            </template>
+                        </el-dialog>
+                    </el-card>
+                </div>
+
                 <div v-show="activeMenu === 'order'">
                     <el-card shadow="hover">
                         <template #header>
@@ -371,7 +422,10 @@
                                         <el-table-column label="🧶 织造车间规划 (基于带坯)" width="250">
                                             <template #default="scope">
                                                 <div v-if="scope.row.weavingStart">
-                                                    <div style="font-size:13px; color:#0284c7; font-weight:bold; margin-bottom:8px;">带坯型号: {{ scope.row.tapePartNumber }}</div>
+                                                    <div style="font-size:13px; color:#0284c7; font-weight:bold; margin-bottom:4px;">带坯型号: {{ scope.row.tapePartNumber }}</div>
+                                                    <div style="font-size:11px; color:#64748b; margin-bottom:8px;">
+                                                        工艺要求：经 <b>{{scope.row.warpSpec}}</b> / 纬 <b>{{scope.row.weftSpec}}</b>
+                                                    </div>
                                                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom:8px;">
                                                         <span style="font-size:12px;color:#475569;">改机预留(天):</span>
                                                         <el-input-number v-model="scope.row.changeoverDays" size="small" controls-position="right" style="width:110px;"></el-input-number>
