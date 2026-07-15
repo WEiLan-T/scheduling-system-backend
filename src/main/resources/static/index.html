@@ -14,6 +14,7 @@
         .login-box { width: 380px; padding: 40px; background: white; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
         .el-menu { border-right: none !important; }
         .el-card__header { background-color: #f8fafc; }
+        .filter-bar { display: flex; flex-wrap: wrap; gap: 15px; background: #f8fafc; padding: 15px; border-radius: 6px; border: 1px solid #e2e8f0; margin-bottom: 15px; align-items: center; }
     </style>
 </head>
 <body>
@@ -31,7 +32,7 @@
 
     <div v-else class="app-container">
         <div class="header">
-            <h2 style="margin: 0; font-size: 20px;">🏭 智能排产与制造执行系统（0.1.3）</h2>
+            <h2 style="margin: 0; font-size: 20px;">🏭 智能排产与制造执行系统（0.1.4）</h2>
             <div style="display: flex; align-items: center;">
                 <el-button type="info" size="small" plain @click="refreshCurrentPage">🔄 极速刷新</el-button>
                 <el-tag type="success" effect="dark" style="margin: 0 15px; font-size: 14px;">当前签到: {{ currentUser }}</el-tag>
@@ -109,7 +110,15 @@
                     </el-card>
 
                     <el-card shadow="hover" style="margin-top: 20px;">
-                        <el-table :data="weavingLogList" border stripe size="small" v-loading="loading" style="width: 100%">
+                        <div class="filter-bar">
+                            <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 快速检索：</b>
+                            <el-input v-model="weavingSearch.tapePartNumber" placeholder="检索带坯零件号..." clearable style="width: 180px;"></el-input>
+                            <el-input v-model="weavingSearch.tapeNumber" placeholder="检索带坯编号..." clearable style="width: 180px;"></el-input>
+                            <el-input v-model="weavingSearch.machineId" placeholder="检索生产机台号..." clearable style="width: 180px;"></el-input>
+                            <el-tag type="info" style="margin-left:auto">共筛选出 {{ weavingTotal }} 条</el-tag>
+                        </div>
+
+                        <el-table :data="paginatedWeavingLogs" border stripe size="small" v-loading="loading" style="width: 100%">
                             <el-table-column prop="entryDate" label="账期" width="95" fixed></el-table-column>
                             <el-table-column prop="tapePartNumber" label="零件号" width="100" fixed></el-table-column>
                             <el-table-column prop="tapeNumber" label="带坯编号" width="95"></el-table-column>
@@ -138,6 +147,10 @@
                                 </template>
                             </el-table-column>
                         </el-table>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                            <el-pagination v-model:current-page="weavingPage" :page-size="10" layout="total, prev, pager, next" :total="weavingTotal"></el-pagination>
+                        </div>
                     </el-card>
                 </div>
 
@@ -182,7 +195,17 @@
                     </el-card>
 
                     <el-card shadow="hover" style="margin-top: 20px;">
-                        <el-table :data="coexLogList" border stripe size="small" v-loading="loading">
+                        <div class="filter-bar">
+                            <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 快速检索：</b>
+                            <el-input v-model="coexSearch.orderNumber" placeholder="筛选: 订单号" clearable style="width: 140px;"></el-input>
+                            <el-input v-model="coexSearch.lineId" placeholder="筛选: 产线号" clearable style="width: 140px;"></el-input>
+                            <el-input v-model="coexSearch.finishedPartNumber" placeholder="筛选: 成品零件号" clearable style="width: 150px;"></el-input>
+                            <el-input v-model="coexSearch.semiFinishedNumber" placeholder="筛选: 半成品编号" clearable style="width: 150px;"></el-input>
+                            <el-input v-model="coexSearch.tapePartNumber" placeholder="筛选: 带坯零件号(系统)" clearable style="width: 160px;"></el-input>
+                            <el-tag type="info" style="margin-left:auto">共筛选出 {{ coexTotal }} 条</el-tag>
+                        </div>
+
+                        <el-table :data="paginatedCoexLogs" border stripe size="small" v-loading="loading">
                             <el-table-column prop="entryDate" label="账期" width="90"></el-table-column>
                             <el-table-column prop="orderNumber" label="订单号" width="90"></el-table-column>
                             <el-table-column prop="lineId" label="线号" width="60" align="center"></el-table-column>
@@ -200,6 +223,10 @@
                                 </template>
                             </el-table-column>
                         </el-table>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                            <el-pagination v-model:current-page="coexPage" :page-size="10" layout="total, prev, pager, next" :total="coexTotal"></el-pagination>
+                        </div>
                     </el-card>
                 </div>
 
@@ -213,12 +240,13 @@
                         </template>
                         <div style="margin-bottom: 20px; display: flex; justify-content: space-between;">
                             <div style="display: flex; gap: 10px;">
-                                <el-input v-model="invSearchKeyword" placeholder="输入带坯型号过滤..." style="width: 300px;" clearable @clear="loadInventory"></el-input>
-                                <el-button type="primary" @click="loadInventory">精准检视</el-button>
+                                <el-input v-model="invSearchKeyword" placeholder="输入带坯型号回车过滤..." style="width: 300px;" clearable @clear="loadInventory" @keyup.enter="loadInventory"></el-input>
+                                <el-button type="primary" @click="loadInventory">精准检视后台数据</el-button>
                             </div>
                             <el-button type="success" @click="openAddInv">手工建档入库</el-button>
                         </div>
-                        <el-table :data="inventoryList" border stripe v-loading="invLoading" style="width: 100%">
+
+                        <el-table :data="paginatedInventoryList" border stripe v-loading="invLoading" style="width: 100%">
                             <el-table-column type="expand">
                                 <template #default="props">
                                     <div style="padding: 10px 20px; background-color: #f8fafc; border-left: 4px solid #f97316;">
@@ -262,6 +290,10 @@
                             </el-table-column>
                         </el-table>
 
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                            <el-pagination v-model:current-page="invPage" :page-size="10" layout="total, prev, pager, next" :total="invTotal"></el-pagination>
+                        </div>
+
                         <el-dialog :title="invForm.id ? '🛠️ 修正库存档案' : '📦 建立新库存档案'" v-model="invDialogVisible" width="500px">
                             <el-form :model="invForm" label-width="110px">
                                 <el-form-item label="账期"><el-date-picker v-model="invForm.entryDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item>
@@ -291,7 +323,14 @@
                             </div>
                         </template>
 
-                        <el-table :data="processList" border stripe size="small" style="width: 100%">
+                        <div class="filter-bar">
+                            <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 快速检索：</b>
+                            <el-input v-model="processSearch.finishedPartNumber" placeholder="筛选: 成品零件号" clearable style="width: 200px;"></el-input>
+                            <el-input v-model="processSearch.tapePartNumber" placeholder="筛选: 带坯零件号" clearable style="width: 200px;"></el-input>
+                            <el-tag type="info" style="margin-left:auto">共筛选出 {{ processTotal }} 条</el-tag>
+                        </div>
+
+                        <el-table :data="paginatedProcessList" border stripe size="small" style="width: 100%">
                             <el-table-column prop="id" label="工艺ID" width="70" align="center"></el-table-column>
                             <el-table-column prop="finishedPartNumber" label="成品零件号"></el-table-column>
                             <el-table-column prop="finishedModelSpec" label="成品规格"></el-table-column>
@@ -306,6 +345,10 @@
                                 </template>
                             </el-table-column>
                         </el-table>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                            <el-pagination v-model:current-page="processPage" :page-size="10" layout="total, prev, pager, next" :total="processTotal"></el-pagination>
+                        </div>
 
                         <el-dialog :title="processForm.id ? '🛠️ 修正产品工艺参数' : '➕ 建立全新产品工艺流向'" v-model="processDialogVisible" width="550px">
                             <el-form :model="processForm" label-width="110px">
@@ -361,7 +404,7 @@
 
                     <el-card shadow="hover" style="margin-top: 20px;">
                         <template #header><b style="font-size: 15px; color: #475569;">📜 历史销售订单大盘与管理</b></template>
-                        <el-table :data="orderList" border stripe size="small">
+                        <el-table :data="paginatedOrderList" border stripe size="small">
                             <el-table-column type="expand">
                                 <template #default="props">
                                     <el-table :data="props.row.items" size="small" border style="margin: 10px; width: 95%;">
@@ -385,6 +428,10 @@
                                 </template>
                             </el-table-column>
                         </el-table>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                            <el-pagination v-model:current-page="orderPage" :page-size="10" layout="total, prev, pager, next" :total="orderTotal"></el-pagination>
+                        </div>
                     </el-card>
 
                     <el-dialog title="🔮 订单离线模拟推演结果 (草稿)" v-model="simDialogVisible" width="700px">
@@ -480,6 +527,7 @@
                                                 </div>
                                             </template>
                                         </el-table-column>
+
 
                                         <el-table-column label="织造排期 (允许强改)" width="130">
                                             <template #default="scope">
