@@ -10,7 +10,7 @@ const app = createApp({
 
         const isLoggedIn = ref(false);
         const currentUser = ref('');
-        const activeMenu = ref('weaving');
+        const activeMenu = ref('dashboard'); // 默认登入后展示全厂全景仪表
         const loading = ref(false);
 
         const machineList = ref([]);
@@ -45,7 +45,10 @@ const app = createApp({
         onMounted(() => {
             const token = localStorage.getItem('jwt_token');
             const user = localStorage.getItem('current_user');
-            if (token && user) { isLoggedIn.value = true; currentUser.value = user; loadWeavingLogs(); loadMachinesAndLines(); }
+            if (token && user) {
+                isLoggedIn.value = true; currentUser.value = user;
+                loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory();
+            }
         });
 
         const loginForm = reactive({ username: '', password: '' });
@@ -56,7 +59,8 @@ const app = createApp({
                 const res = await axios.post('/api/v1/auth/login', loginForm);
                 if (res.data && res.data.includes('eyJ')) {
                     localStorage.setItem('jwt_token', res.data.trim()); localStorage.setItem('current_user', loginForm.username);
-                    isLoggedIn.value = true; currentUser.value = loginForm.username; ElMessage.success('核验通过！'); loadWeavingLogs(); loadMachinesAndLines();
+                    isLoggedIn.value = true; currentUser.value = loginForm.username; ElMessage.success('核验通过！');
+                    loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory();
                 }
             } catch (error) { if(error.response && error.response.status === 401) ElMessage.error('账号或密码错误！'); } finally { loading.value = false; }
         };
@@ -64,7 +68,8 @@ const app = createApp({
         const handleMenuSelect = (index) => { activeMenu.value = index; estResult.value = null; };
 
         const refreshCurrentPage = () => {
-            if (activeMenu.value === 'weaving') { loadWeavingLogs(); ElMessage.success('🔄 织造历史台账同步刷新完成'); }
+            if (activeMenu.value === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); ElMessage.success('🔄 厂区数字孪生快照已更新'); }
+            else if (activeMenu.value === 'weaving') { loadWeavingLogs(); ElMessage.success('🔄 织造历史台账同步刷新完成'); }
             else if (activeMenu.value === 'process') { loadProcesses(); ElMessage.success('🔄 工艺路线参数配置库已同步刷新'); }
             else if (activeMenu.value === 'coex') { loadCoexLogs(); ElMessage.success('🔄 共挤历史台账同步刷新完成'); }
             else if (activeMenu.value === 'inventory') { loadInventory(); ElMessage.success('🔄 虚拟分批库存大盘已刷新'); }
@@ -77,10 +82,7 @@ const app = createApp({
         // ==========================================
         // 🧶 织造车间 MES (含搜索与分页)
         // ==========================================
-        const weavingLogList = ref([]);
-        const weavingFileRef = ref(null);
-
-        // 🌟 织造：搜索与分页控制
+        const weavingLogList = ref([]); const weavingFileRef = ref(null);
         const weavingSearch = reactive({ tapePartNumber: '', tapeNumber: '', machineId: '' });
         const weavingPage = ref(1);
         const filteredWeavingLogs = computed(() => {
@@ -128,10 +130,7 @@ const app = createApp({
         // ==========================================
         // 🗜️ 共挤车间 MES (含搜索与分页)
         // ==========================================
-        const coexLogList = ref([]);
-        const coexFileRef = ref(null);
-
-        // 🌟 共挤：搜索与分页控制
+        const coexLogList = ref([]); const coexFileRef = ref(null);
         const coexSearch = reactive({ orderNumber: '', lineId: '', finishedPartNumber: '', semiFinishedNumber: '', tapePartNumber: '' });
         const coexPage = ref(1);
         const filteredCoexLogs = computed(() => {
@@ -177,11 +176,10 @@ const app = createApp({
         const handleCoexImport = async (e) => { const file = e.target.files[0]; if (!file) return; const fd = new FormData(); fd.append('file', file); loading.value = true; try { const res = await axios.post('/api/v1/workshops/integration/coextrusion/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); ElMessage.success(res.data); loadCoexLogs(); } catch(err) {} finally { loading.value = false; e.target.value = ''; } };
 
         // ==========================================
-        // 📦 虚拟库存总览 (含分页)
+        // 📦 虚拟库存总览
         // ==========================================
         const invSearchKeyword = ref(''); const inventoryList = ref([]); const invLoading = ref(false); const invDialogVisible = ref(false); const invSaveLoading = ref(false); const invForm = reactive({ id: null, entryDate: getToday(), tapePartNumber: '', tapeNumber: '', finishedPartNumber: '', currentStockMeters: 0 });
 
-        // 🌟 库存分页
         const invPage = ref(1);
         const paginatedInventoryList = computed(() => {
             const start = (invPage.value - 1) * 10;
@@ -209,12 +207,11 @@ const app = createApp({
         const deleteInv = async (id) => { try { await axios.delete(`/api/v1/workshops/integration/inventory/${id}`); loadInventory(); ElMessage.success('已删除');} catch (error) {} };
 
         // ==========================================
-        // ⚙️ 工艺路线配置库 (含搜索与分页)
+        // ⚙️ 工艺路线配置库
         // ==========================================
         const processList = ref([]); const processFileRef = ref(null); const processDialogVisible = ref(false);
         const processForm = reactive({ id: null, finishedPartNumber: '', tapePartNumber: '', warpSpec: '', weftSpec: '' });
 
-        // 🌟 工艺路线：搜索与分页控制
         const processSearch = reactive({ finishedPartNumber: '', tapePartNumber: '' });
         const processPage = ref(1);
         const filteredProcessList = computed(() => {
@@ -240,13 +237,12 @@ const app = createApp({
         const handleProcessImport = async (event) => { const file = event.target.files[0]; if (!file) return; const formData = new FormData(); formData.append('file', file); loading.value = true; try { const response = await axios.post('/api/v1/workshops/integration/process/import', formData, { headers: { 'Content-Type': 'multipart/form-data' } }); ElMessage.success(response.data); loadProcesses(); } catch (error) {} finally { loading.value = false; event.target.value = ''; } };
 
         // ==========================================
-        // 🛒 销售订单核心 (含分页)
+        // 🛒 销售订单核心
         // ==========================================
         const isOrderEditMode = ref(false); const orderList = ref([]); const simDialogVisible = ref(false); const simResult = ref(null);
         const orderHeader = reactive({ orderId: '', placerName: '', orderDate: getToday(), deliveryDate: '' });
         const orderItems = ref([{ finishedPartNumber: '', modelSpec: '', material: '', caliber: '', metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }]);
 
-        // 🌟 订单分页
         const orderPage = ref(1);
         const paginatedOrderList = computed(() => {
             const start = (orderPage.value - 1) * 10;
@@ -288,11 +284,59 @@ const app = createApp({
             for (const tag of tags) { if (!seen.has(tag.text)) { seen.add(tag.text); uniqueTags.push(tag); } }
             return uniqueTags;
         };
-        const getMachineDetails = (machineId) => { const m = machineList.value.find(x => x.machineId === machineId); if (!m) return ''; return `所属: ${m.workshopId} | 状态: ${m.machineStatus} | 口径限制: ${m.caliberLimit || '无'} \n 当前经纬: ${m.warpSpec || '-'}/${m.weftSpec || '-'}`; };
-        const getLineDetails = (lineId) => { const l = lineList.value.find(x => x.lineId === lineId); if (!l) return ''; return `所属: ${l.workshopId} | 状态: ${l.lineStatus} | 口径限制: ${l.caliberLimit || '无'}`; };
 
-        // ================= 视图监听器 =================
+        // ==========================================
+        // 🌟 厂区双车间大盘核心映射逻辑
+        // ==========================================
+        const getStatusClass = (status) => {
+            if (!status) return 'status-other';
+            if (status.includes('产')) return 'status-producing';
+            if (status.includes('闲')) return 'status-idle';
+            if (status.includes('停')) return 'status-stopped';
+            if (status.includes('修')) return 'status-maintenance';
+            return 'status-other';
+        };
+
+        const factoryMachines = computed(() => {
+            return machineList.value.map(m => {
+                const logs = weavingLogList.value.filter(log => String(log.machineId) === String(m.machineId));
+                logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+                const latest = logs[0] || {};
+                return {
+                    ...m,
+                    currentTape: latest.tapePartNumber || '无任务',
+                    currentCapacity: latest.capacityPerDay || 0,
+                    operator: latest.operatorName || m.operatorName || '未知',
+                    statusClass: getStatusClass(m.machineStatus)
+                };
+            });
+        });
+
+        // 🌟 取消车间划分：整合 1# 至 35# 所有机台至统一的【织造大车间】
+        const allWeavingMachines = computed(() => {
+            return factoryMachines.value.sort((a, b) => parseInt(a.machineId) - parseInt(b.machineId));
+        });
+
+        const factoryLines = computed(() => {
+            return lineList.value.map(l => {
+                const logs = coexLogList.value.filter(log => String(log.lineId) === String(l.lineId));
+                logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+                const latest = logs[0] || {};
+                return {
+                    ...l,
+                    currentFinished: latest.finishedPartNumber || '无任务',
+                    currentSpeed: latest.productionSpeed || 0,
+                    currentCapacity: latest.capacityPerDay || 0,
+                    statusClass: getStatusClass(l.lineStatus)
+                };
+            }).sort((a, b) => parseInt(a.lineId) - parseInt(b.lineId));
+        });
+
+        const getMachineDetails = (machineId) => { const m = machineList.value.find(x => String(x.machineId) === String(machineId)); if (!m) return ''; return `所属: ${m.workshopId} | 状态: ${m.machineStatus} | 口径限制: ${m.caliberLimit || '无'} \n 当前经纬: ${m.warpSpec || '-'}/${m.weftSpec || '-'}`; };
+        const getLineDetails = (lineId) => { const l = lineList.value.find(x => String(x.lineId) === String(lineId)); if (!l) return ''; return `所属: ${l.workshopId} | 状态: ${l.lineStatus} | 口径限制: ${l.caliberLimit || '无'}`; };
+
         watch(activeMenu, (newVal) => {
+            if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); }
             if (newVal === 'inventory') loadInventory();
             if (newVal === 'weaving') loadWeavingLogs();
             if (newVal === 'coex') loadCoexLogs();
@@ -300,27 +344,22 @@ const app = createApp({
             if (newVal === 'process') loadProcesses();
         });
 
-        // 🌟 暴漏给模板的所有变量与方法 (追加暴露全部新分页搜索状态)
         return {
-            isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect,
-            refreshCurrentPage, machineList, lineList,
-
+            isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect, refreshCurrentPage, machineList, lineList,
             weavingForm, weavingLogList, submitWeaving, openEditWeaving, deleteWeaving, resetWeavingForm, weavingFileRef, exportWeavingExcel, handleWeavingImport,
             weavingSearch, weavingPage, paginatedWeavingLogs, weavingTotal,
-
             coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm, coexFileRef, exportCoexExcel, handleCoexImport,
             coexSearch, coexPage, paginatedCoexLogs, coexTotal,
-
             invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv,
             invPage, paginatedInventoryList, invTotal,
-
             orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, simulateOrder, simDialogVisible, simResult,
             orderPage, paginatedOrderList, orderTotal,
-
             estForm, estResult, fetchInitialDraft, recalculateDraft, commitFinalScheduleToDb, calendarDate, getCalendarTags, getMachineDetails, getLineDetails,
-
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport,
-            processSearch, processPage, paginatedProcessList, processTotal
+            processSearch, processPage, paginatedProcessList, processTotal,
+
+            // 🌟 双大区暴露状态
+            allWeavingMachines, factoryLines
         };
     }
 });
