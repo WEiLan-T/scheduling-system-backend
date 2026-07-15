@@ -18,6 +18,8 @@ public class ProductProcess {
     @Column(nullable = false)
     private String tapePartNumber;     // 对应的带坯零件号
 
+    private String finishedModelSpec;  // 成品规格型号
+    private String tapeModelSpec;      // 带坯规格型号
     private String warpSpec;           // 带坯经线型号 (工艺要求)
     private String weftSpec;           // 带坯纬线型号 (工艺要求)
 

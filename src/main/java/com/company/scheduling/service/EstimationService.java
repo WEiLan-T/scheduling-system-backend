@@ -58,24 +58,36 @@ public class EstimationService {
             BigDecimal finishedMeters = item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
             BigDecimal tapeMetersNeeded = finishedMeters.multiply(new BigDecimal("1.10"));
 
-            // 🌟 核心重构：从专门的工艺表中反查带坯型号及工艺要求
-            String tapePartNumber = item.getFinishedPartNumber(); // 默认兜底
+            // ========================================================
+            // 🌟 1. 初始化默认值
+            // ========================================================
+            String tapePartNumber = item.getFinishedPartNumber();
             String warpSpec = "-";
             String weftSpec = "-";
+            String finishedModelSpec = "-";
+            String tapeModelSpec = "-";
 
+            // ========================================================
+            // 🌟 2. 从【工艺表 ProductProcess】中提取真正的规格 (绝对不能用 wh 去 get)
+            // ========================================================
             Optional<ProductProcess> processOpt = processRepo.findByFinishedPartNumber(item.getFinishedPartNumber());
             if (processOpt.isPresent()) {
                 ProductProcess proc = processOpt.get();
                 tapePartNumber = proc.getTapePartNumber();
                 warpSpec = proc.getWarpSpec();
                 weftSpec = proc.getWeftSpec();
+
+                // 👇 核心修正：从 proc (工艺对象) 里提取规格，赋值给局部变量
+                finishedModelSpec = proc.getFinishedModelSpec();
+                tapeModelSpec = proc.getTapeModelSpec();
             }
 
-            // 库存账本依然去虚拟仓库查（此时聚合查找该型号下所有批次的总库存）
+            // ========================================================
+            // 🌟 3. 库存推演部分 (保持不变，计算 currentInventory 等)
+            // ========================================================
             List<VirtualWarehouse> warehouses = warehouseRepo.findByFinishedPartNumber(item.getFinishedPartNumber());
             BigDecimal currentInventory = BigDecimal.ZERO;
             if (!warehouses.isEmpty()) {
-                // 叠加多物理卷的总米数
                 currentInventory = warehouses.stream()
                         .map(w -> w.getCurrentStockMeters() != null ? w.getCurrentStockMeters() : BigDecimal.ZERO)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -95,8 +107,19 @@ public class EstimationService {
             if (currentItemStart.isBefore(overallStartDate)) overallStartDate = currentItemStart;
             if (cDates.endDate.isAfter(overallEndDate)) overallEndDate = cDates.endDate;
 
-            // 🌟 传入经纬线工艺要求到前台大盘
-            itemSchedules.add(buildDraftView(item.getFinishedPartNumber(), tapePartNumber, warpSpec, weftSpec, wDates, cDates));
+            // ========================================================
+            // 🌟 4. 构建草稿视图 (直接传入上面定义好的局部变量！)
+            // ========================================================
+            itemSchedules.add(buildDraftView(
+                    item.getFinishedPartNumber(),
+                    tapePartNumber,
+                    warpSpec,
+                    weftSpec,
+                    finishedModelSpec, // 👈 直接传局部变量，不要写 wh.get...
+                    tapeModelSpec,     // 👈 直接传局部变量，不要写 wh.get...
+                    wDates,
+                    cDates
+            ));
         }
 
         Map<String, Object> draft = new HashMap<>();
@@ -239,12 +262,14 @@ public class EstimationService {
         BigDecimal algoChangeoverDays; BigDecimal algoCoexCapacity; Integer algoDelayDays;
     }
 
-    private Map<String, Object> buildDraftView(String fPn, String tPn, String warp, String weft, ScheduleDates w, ScheduleDates c) {
+    private Map<String, Object> buildDraftView(String fPn, String tPn, String warp, String weft, String fSpec, String tSpec, ScheduleDates w, ScheduleDates c) {
         Map<String, Object> m = new HashMap<>();
         m.put("finishedPartNumber", fPn);
         m.put("tapePartNumber", tPn);
-        m.put("warpSpec", warp); // 经线规范
-        m.put("weftSpec", weft); // 纬线规范
+        m.put("warpSpec", warp);
+        m.put("weftSpec", weft);
+        m.put("finishedModelSpec", fSpec); // 👈 传给前端大盘
+        m.put("tapeModelSpec", tSpec);     // 👈 传给前端大盘
         m.put("weavingStart", w.startDate != null ? w.startDate.toString() : null);
         m.put("weavingEnd", w.endDate != null ? w.endDate.toString() : null);
         m.put("coexStart", c.startDate.toString()); m.put("coexEnd", c.endDate.toString());

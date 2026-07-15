@@ -8,25 +8,34 @@ import java.time.LocalDateTime;
 
 @Data
 @Entity
-@Table(name = "coex_daily_logs")
+@Table(name = "coex_daily_log")
 public class CoexDailyLog {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer id;
 
-    private String finishedPartNumber;
+    private LocalDate entryDate;
     private String lineId;
-    private BigDecimal capacityPerDay;
+
+    // 👇 完美对接车间产能明细表格的专属字段
+    private String orderNumber;          // 订单号
+    private String finishedPartNumber;   // 成品零件号
+    private String semiFinishedNumber;   // 半成品编号 (新增)
+    private String finishedModelSpec;    // 成品规格型号
+    private String tapeNumber;           // 带坯编号
+
+    @Column(precision = 10, scale = 4)
+    private BigDecimal productionSpeed;  // 生产速度（m/s）
+
+    // MES 库存控制相关字段
+    private BigDecimal capacityPerDay;   // 共挤成品长度(米)
+    private String tapePartNumber;       // 带坯零件号(系统反查得出)
+    private BigDecimal tapeDemandQty;    // 带坯消耗长度(米)
+
     private Boolean isDataNormal;
     private String remarks;
-    private BigDecimal tapeDemandQty;
+    private String workshopId;
 
-    private String tapePartNumber;
-
-    // 🌟 核心修复：补充缺失的所耗带坯物理卷号字段
-    private String tapeNumber;
-
-    private LocalDate entryDate;
     private String enteredBy;
     private LocalDateTime createdAt = LocalDateTime.now();
 }

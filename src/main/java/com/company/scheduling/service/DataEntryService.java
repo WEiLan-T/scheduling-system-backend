@@ -44,10 +44,16 @@ public class DataEntryService {
     @Transactional
     public String recordWeavingData(WeavingEntryRequest req, String currentUser) {
         WeavingMachineStatus status = weavingStatusRepo.findById(req.getMachineId()).orElse(new WeavingMachineStatus());
-        status.setMachineId(req.getMachineId()); status.setWorkshopId(req.getWorkshopId()); status.setWarpSpec(req.getWarpSpec());
-        status.setWeftSpec(req.getWeftSpec()); status.setBobbinCount(req.getBobbinCount()); status.setMachineStatus(req.getMachineStatus());
-        status.setCaliberLimit(req.getCaliberLimit()); status.setAdjacentMachine(req.getAdjacentMachine());
-        status.setOperatorName(req.getOperatorName()); status.setEnteredBy(currentUser);
+        status.setMachineId(req.getMachineId());
+        status.setWorkshopId(req.getWorkshopId());
+        status.setWarpSpec(req.getWarpSpec());
+        status.setWeftSpec(req.getWeftSpec());
+        status.setBobbinCount(req.getBobbinCount());
+        status.setMachineStatus(req.getMachineStatus());
+        status.setCaliberLimit(req.getCaliberLimit());
+        status.setAdjacentMachine(req.getAdjacentMachine());
+        status.setOperatorName(req.getOperatorName());
+        status.setEnteredBy(currentUser);
         weavingStatusRepo.save(status);
 
         WeavingDailyLog log;
@@ -74,10 +80,15 @@ public class DataEntryService {
             updateVirtualWarehouse(req.getTapePartNumber(), req.getTapeNumber(), req.getCapacityPerDay(), req.getEntryDate(), currentUser);
         }
 
-        log.setTapePartNumber(req.getTapePartNumber()); log.setTapeNumber(req.getTapeNumber());
-        log.setMachineId(req.getMachineId()); log.setCapacityPerDay(req.getCapacityPerDay());
-        log.setIsDataNormal(req.getIsDataNormal()); log.setRemarks(req.getRemarks());
-        log.setEntryDate(req.getEntryDate()); log.setTotalDemand(req.getTotalDemand()); log.setEnteredBy(currentUser);
+        log.setTapePartNumber(req.getTapePartNumber());
+        log.setTapeNumber(req.getTapeNumber());
+        log.setMachineId(req.getMachineId());
+        log.setCapacityPerDay(req.getCapacityPerDay());
+        log.setIsDataNormal(req.getIsDataNormal());
+        log.setRemarks(req.getRemarks());
+        log.setEntryDate(req.getEntryDate());
+        log.setTotalDemand(req.getTotalDemand());
+        log.setEnteredBy(currentUser);
         weavingLogRepo.save(log);
 
         return req.getId() != null ? "✅ 织造历史修改成功，(型号+编号)对应的可用库存已智能重算！" : "✅ 今日织造合并归档落库成功！";
@@ -140,11 +151,20 @@ public class DataEntryService {
             updateVirtualWarehouse(req.getTapePartNumber(), req.getTapeNumber(), req.getTapeDemandQty().negate(), req.getEntryDate(), currentUser);
         }
 
-        log.setFinishedPartNumber(req.getFinishedPartNumber()); log.setLineId(req.getLineId());
-        log.setCapacityPerDay(req.getCapacityPerDay()); log.setIsDataNormal(req.getIsDataNormal());
-        log.setRemarks(req.getRemarks()); log.setTapeDemandQty(req.getTapeDemandQty());
-        log.setTapePartNumber(req.getTapePartNumber()); log.setTapeNumber(req.getTapeNumber());
-        log.setEntryDate(req.getEntryDate()); log.setEnteredBy(currentUser);
+        log.setFinishedPartNumber(req.getFinishedPartNumber());
+        log.setOrderNumber(req.getOrderNumber());
+        log.setSemiFinishedNumber(req.getSemiFinishedNumber());
+        log.setFinishedModelSpec(req.getFinishedModelSpec());
+        log.setProductionSpeed(req.getProductionSpeed());
+        log.setLineId(req.getLineId());
+        log.setCapacityPerDay(req.getCapacityPerDay());
+        log.setIsDataNormal(req.getIsDataNormal());
+        log.setRemarks(req.getRemarks());
+        log.setTapeDemandQty(req.getTapeDemandQty());
+        log.setTapePartNumber(req.getTapePartNumber());
+        log.setTapeNumber(req.getTapeNumber());
+        log.setEntryDate(req.getEntryDate());
+        log.setEnteredBy(currentUser);
         coexLogRepo.save(log);
 
         return req.getId() != null ? "✅ 共挤台账修改成功，消耗库存已智能对账！" : "✅ 共挤台账归档成功，消耗带坯库存已自动扣除。";
@@ -158,6 +178,295 @@ public class DataEntryService {
         }
         coexLogRepo.deleteById(id);
         return "🗑️ 共挤台账已废弃，已退还扣减的指定编号带坯库存！";
+    }
+
+    // =========================================================================
+// 🧶 织造车间 MES：Excel 导入与导出引擎（支持空数据、平补库存）
+// =========================================================================
+    // =========================================================================
+    // 🌟 安全的浮点数转换工具（防止 Excel 出现 #DIV/0! 或异常文本导致系统崩溃）
+    // =========================================================================
+    private BigDecimal parseBigDecimalSafely(String str) {
+        if (str == null || str.trim().isEmpty()) return null;
+        try {
+            return new BigDecimal(str.trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 导入织造台账 Excel（完美契合 17 列格式，全字段存入数据库）
+     */
+    @Transactional
+    public String importWeavingExcel(MultipartFile file, String currentUser) throws Exception {
+        if (file == null || file.isEmpty()) throw new RuntimeException("上传的织造 Excel 为空！");
+        int successCount = 0;
+        int skipCount = 0;
+
+        try (InputStream is = file.getInputStream(); Workbook workbook = WorkbookFactory.create(is)) {
+            Sheet sheet = workbook.getSheetAt(0);
+
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                String tapePartNumber = getCellValueAsString(row.getCell(0));
+                String yearStr = getCellValueAsString(row.getCell(1));
+                String monthStr = getCellValueAsString(row.getCell(2));
+                String dayStr = getCellValueAsString(row.getCell(3));
+
+                // 核心字段为空则视为无效行
+                if (tapePartNumber.isEmpty() || yearStr.isEmpty() || monthStr.isEmpty() || dayStr.isEmpty()) {
+                    skipCount++; continue;
+                }
+
+                LocalDate entryDate;
+                try {
+                    int y = (int) Double.parseDouble(yearStr);
+                    if (y < 2000) y += 2000;
+                    int m = (int) Double.parseDouble(monthStr);
+                    int d = (int) Double.parseDouble(dayStr);
+                    entryDate = LocalDate.of(y, m, d);
+                } catch (Exception e) {
+                    skipCount++; continue;
+                }
+
+                String machineIdStr = getCellValueAsString(row.getCell(4));
+                String tapeNumber = getCellValueAsString(row.getCell(5));
+                String finalTapeNum = tapeNumber.isEmpty() ? "DEFAULT" : tapeNumber;
+
+                BigDecimal capacity = parseBigDecimalSafely(getCellValueAsString(row.getCell(11)));
+                if (capacity == null) capacity = BigDecimal.ZERO;
+
+                WeavingDailyLog log = new WeavingDailyLog();
+                log.setEntryDate(entryDate);
+                log.setTapePartNumber(tapePartNumber);
+                log.setTapeNumber(finalTapeNum);
+                log.setMachineId(machineIdStr.isEmpty() ? "未定" : machineIdStr);
+                log.setCapacityPerDay(capacity);
+                log.setWorkshopId("织造车间");
+
+                // 🌟 将原本塞进备注的独立字段，分别独立落库
+                log.setModelSpec(getCellValueAsString(row.getCell(6)));
+                log.setWarpSpec(getCellValueAsString(row.getCell(7)));
+                log.setWeftSpec(getCellValueAsString(row.getCell(8)));
+                log.setShift(getCellValueAsString(row.getCell(9)));
+                log.setOperatorName(getCellValueAsString(row.getCell(10)));
+
+                log.setStandardCapacity(parseBigDecimalSafely(getCellValueAsString(row.getCell(12))));
+                log.setStandardHours(parseBigDecimalSafely(getCellValueAsString(row.getCell(13))));
+                log.setStandardHourlyCapacity(parseBigDecimalSafely(getCellValueAsString(row.getCell(14))));
+                log.setPerformanceHours(parseBigDecimalSafely(getCellValueAsString(row.getCell(15))));
+
+                log.setRemarks(getCellValueAsString(row.getCell(16)));
+                log.setIsDataNormal(true);
+                log.setEnteredBy(currentUser);
+
+                weavingLogRepo.save(log);
+                updateVirtualWarehouse(tapePartNumber, finalTapeNum, capacity, entryDate, currentUser);
+                successCount++;
+            }
+        }
+        return "🧶 织造 Excel 解析完毕！已实现 17 列明细全数落库。导入 " + successCount + " 条，跳过 " + skipCount + " 条。";
+    }
+
+    /**
+     * 导出织造台账到 Excel（严格还原车间 17 列明细格式）
+     */
+    public byte[] exportWeavingToExcel() throws Exception {
+        List<WeavingDailyLog> logs = weavingLogRepo.findAllByOrderByEntryDateDesc();
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("织造车间历史台账");
+            Row headerRow = sheet.createRow(0);
+
+            // 🌟 严格对应这 17 个列
+            String[] headers = {"零件号", "年", "月", "日", "机台号", "带坯编号", "型号规格", "经线", "纬线", "班次", "姓名", "当班产量", "标准产能", "标准小时", "标准小时产能", "绩效工时", "备注"};
+
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font font = workbook.createFont(); font.setBold(true); headerStyle.setFont(font);
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            int rowIdx = 1;
+            for (WeavingDailyLog log : logs) {
+                Row row = sheet.createRow(rowIdx++);
+
+                row.createCell(0).setCellValue(log.getTapePartNumber() != null ? log.getTapePartNumber() : "");
+
+                if (log.getEntryDate() != null) {
+                    row.createCell(1).setCellValue(log.getEntryDate().getYear());
+                    row.createCell(2).setCellValue(log.getEntryDate().getMonthValue());
+                    row.createCell(3).setCellValue(log.getEntryDate().getDayOfMonth());
+                }
+
+                row.createCell(4).setCellValue(log.getMachineId() != null ? log.getMachineId() : "");
+                row.createCell(5).setCellValue(log.getTapeNumber() != null ? log.getTapeNumber() : "");
+
+                // 🌟 从数据库对应字段原封不动拉取数据
+                row.createCell(6).setCellValue(log.getModelSpec() != null ? log.getModelSpec() : "");
+                row.createCell(7).setCellValue(log.getWarpSpec() != null ? log.getWarpSpec() : "");
+                row.createCell(8).setCellValue(log.getWeftSpec() != null ? log.getWeftSpec() : "");
+                row.createCell(9).setCellValue(log.getShift() != null ? log.getShift() : "");
+                row.createCell(10).setCellValue(log.getOperatorName() != null ? log.getOperatorName() : "");
+                row.createCell(11).setCellValue(log.getCapacityPerDay() != null ? log.getCapacityPerDay().doubleValue() : 0.0);
+
+                // 处理可能为空的 BigDecimal 绩效字段
+                if (log.getStandardCapacity() != null) row.createCell(12).setCellValue(log.getStandardCapacity().doubleValue());
+                else row.createCell(12).setCellValue("");
+
+                if (log.getStandardHours() != null) row.createCell(13).setCellValue(log.getStandardHours().doubleValue());
+                else row.createCell(13).setCellValue("");
+
+                if (log.getStandardHourlyCapacity() != null) row.createCell(14).setCellValue(log.getStandardHourlyCapacity().doubleValue());
+                else row.createCell(14).setCellValue("");
+
+                if (log.getPerformanceHours() != null) row.createCell(15).setCellValue(log.getPerformanceHours().doubleValue());
+                else row.createCell(15).setCellValue("");
+
+                row.createCell(16).setCellValue(log.getRemarks() != null ? log.getRemarks() : "");
+            }
+            workbook.write(bos); return bos.toByteArray();
+        }
+    }
+
+// =========================================================================
+// 🗜️ 共挤车间 MES：Excel 导入与导出引擎（支持自动反查型号、扣减库存）
+// =========================================================================
+
+    /**
+     * 导入共挤台账 Excel（完美契合 13 列结构，包含半成品编号）
+     */
+    @Transactional
+    public String importCoexExcel(MultipartFile file, String currentUser) throws Exception {
+        if (file == null || file.isEmpty()) throw new RuntimeException("上传的共挤 Excel 为空！");
+        int successCount = 0; int skipCount = 0;
+
+        try (InputStream is = file.getInputStream(); Workbook workbook = WorkbookFactory.create(is)) {
+            Sheet sheet = workbook.getSheetAt(0);
+
+            for (int i = 3; i <= sheet.getLastRowNum(); i++) { // 第4行开始是数据
+                Row row = sheet.getRow(i); if (row == null) continue;
+
+                String orderNumber = getCellValueAsString(row.getCell(0));
+                String lineId = getCellValueAsString(row.getCell(1));
+                String finishedPartNumber = getCellValueAsString(row.getCell(2));
+                String semiFinishedNumber = getCellValueAsString(row.getCell(3)); // 第4列：半成品编号
+                String finishedModelSpec = getCellValueAsString(row.getCell(4));
+                String tapeNumber = getCellValueAsString(row.getCell(5));
+                String speedStr = getCellValueAsString(row.getCell(6));
+                String yearStr = getCellValueAsString(row.getCell(7));
+                String monthStr = getCellValueAsString(row.getCell(8));
+                String dayStr = getCellValueAsString(row.getCell(9));
+
+                if (finishedPartNumber.isEmpty() || lineId.isEmpty() || yearStr.isEmpty()) { skipCount++; continue; }
+
+                LocalDate entryDate;
+                try {
+                    int y = (int) Double.parseDouble(yearStr); if (y < 2000) y += 2000;
+                    int m = (int) Double.parseDouble(monthStr);
+                    int d = (int) Double.parseDouble(dayStr);
+                    entryDate = LocalDate.of(y, m, d);
+                } catch (Exception e) { skipCount++; continue; }
+
+                BigDecimal speed = parseBigDecimalSafely(speedStr);
+                BigDecimal capacity = parseBigDecimalSafely(getCellValueAsString(row.getCell(10)));
+                if (capacity == null) capacity = BigDecimal.ZERO;
+                BigDecimal demandQty = parseBigDecimalSafely(getCellValueAsString(row.getCell(11)));
+                if (demandQty == null) demandQty = BigDecimal.ZERO;
+
+                String tapePartNumber = "DEFAULT";
+                Optional<VirtualWarehouse> vw = warehouseRepo.findFirstByTapeNumber(tapeNumber.trim());
+                if (vw.isPresent()) tapePartNumber = vw.get().getTapePartNumber();
+
+                CoexDailyLog log = new CoexDailyLog();
+                log.setEntryDate(entryDate); log.setOrderNumber(orderNumber); log.setLineId(lineId);
+                log.setFinishedPartNumber(finishedPartNumber); log.setSemiFinishedNumber(semiFinishedNumber);
+                log.setFinishedModelSpec(finishedModelSpec); log.setTapeNumber(tapeNumber);
+                log.setProductionSpeed(speed); log.setCapacityPerDay(capacity);
+                log.setTapePartNumber(tapePartNumber); log.setTapeDemandQty(demandQty);
+                log.setRemarks(getCellValueAsString(row.getCell(12)));
+                log.setWorkshopId("共挤车间"); log.setIsDataNormal(true); log.setEnteredBy(currentUser);
+                coexLogRepo.save(log);
+
+                if (demandQty.compareTo(BigDecimal.ZERO) > 0) {
+                    updateVirtualWarehouse(tapePartNumber, tapeNumber, demandQty.negate(), entryDate, currentUser);
+                }
+                successCount++;
+            }
+        }
+        return "🗜️ 共挤 Excel 解析完毕！全列明细已落库。导入成功 " + successCount + " 条，跳过 " + skipCount + " 条。";
+    }
+
+    /**
+     * 导出全量共挤台账到 Excel（严格还原带双层表头和合并单元格的 13 列格式）
+     */
+    public byte[] exportCoexToExcel() throws Exception {
+        List<CoexDailyLog> logs = coexLogRepo.findAllByOrderByEntryDateDesc();
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("共挤车间产线产能");
+
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font font = workbook.createFont(); font.setBold(true); headerStyle.setFont(font);
+            headerStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.CENTER);
+            headerStyle.setVerticalAlignment(org.apache.poi.ss.usermodel.VerticalAlignment.CENTER);
+
+            // 第 1 行：大标题
+            Row row0 = sheet.createRow(0); Cell titleCell = row0.createCell(0);
+            titleCell.setCellValue("共挤产线产能明细汇总"); titleCell.setCellStyle(headerStyle);
+            sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(0, 0, 0, 12));
+
+            // 第 2 行：主表头
+            Row row1 = sheet.createRow(1);
+            String[] headers1 = {"订单号", "产线号", "成品零件号", "半成品编号", "成品规格型号", "带坯编号", "生产速度(m/s)", "共挤日期", "", "", "共挤成品长度", "带坯消耗长度", "备注"};
+            for (int i = 0; i < headers1.length; i++) {
+                Cell c = row1.createCell(i); c.setCellValue(headers1[i]); c.setCellStyle(headerStyle);
+            }
+
+            // 第 3 行：日期副表头
+            Row row2 = sheet.createRow(2);
+            row2.createCell(7).setCellValue("年"); row2.getCell(7).setCellStyle(headerStyle);
+            row2.createCell(8).setCellValue("月"); row2.getCell(8).setCellStyle(headerStyle);
+            row2.createCell(9).setCellValue("日"); row2.getCell(9).setCellStyle(headerStyle);
+
+            // 合并单元格
+            sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(1, 1, 7, 9)); // 合并“共挤日期”
+            int[] mergeCols = {0, 1, 2, 3, 4, 5, 6, 10, 11, 12};
+            for (int colIdx : mergeCols) sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(1, 2, colIdx, colIdx));
+
+            // 写入数据
+            int rowIdx = 3;
+            for (CoexDailyLog log : logs) {
+                Row row = sheet.createRow(rowIdx++);
+                row.createCell(0).setCellValue(log.getOrderNumber() != null ? log.getOrderNumber() : "");
+                row.createCell(1).setCellValue(log.getLineId() != null ? log.getLineId() : "");
+                row.createCell(2).setCellValue(log.getFinishedPartNumber() != null ? log.getFinishedPartNumber() : "");
+                row.createCell(3).setCellValue(log.getSemiFinishedNumber() != null ? log.getSemiFinishedNumber() : "");
+                row.createCell(4).setCellValue(log.getFinishedModelSpec() != null ? log.getFinishedModelSpec() : "");
+                row.createCell(5).setCellValue(log.getTapeNumber() != null ? log.getTapeNumber() : "");
+
+                if (log.getProductionSpeed() != null) row.createCell(6).setCellValue(log.getProductionSpeed().doubleValue());
+                else row.createCell(6).setCellValue("");
+
+                if (log.getEntryDate() != null) {
+                    row.createCell(7).setCellValue(log.getEntryDate().getYear());
+                    row.createCell(8).setCellValue(log.getEntryDate().getMonthValue());
+                    row.createCell(9).setCellValue(log.getEntryDate().getDayOfMonth());
+                }
+
+                if (log.getCapacityPerDay() != null) row.createCell(10).setCellValue(log.getCapacityPerDay().doubleValue());
+                else row.createCell(10).setCellValue("");
+
+                if (log.getTapeDemandQty() != null) row.createCell(11).setCellValue(log.getTapeDemandQty().doubleValue());
+                else row.createCell(11).setCellValue("");
+
+                row.createCell(12).setCellValue(log.getRemarks() != null ? log.getRemarks() : "");
+            }
+            workbook.write(bos); return bos.toByteArray();
+        }
     }
 
     // =========================================================================
@@ -193,27 +502,25 @@ public class DataEntryService {
                     continue; // 过滤空行
                 }
 
-                // 🌟 安全读取单元格方法：防止空指针与类型转换异常
+                // 🌟 更新后的 6 列安全读取
                 String finishedPartNumber = getCellValueAsString(row.getCell(0));
-                String tapePartNumber = getCellValueAsString(row.getCell(1));
-                String warpSpec = getCellValueAsString(row.getCell(2));
-                String weftSpec = getCellValueAsString(row.getCell(3));
+                String finishedModelSpec = getCellValueAsString(row.getCell(1));
+                String tapePartNumber = getCellValueAsString(row.getCell(2));
+                String tapeModelSpec = getCellValueAsString(row.getCell(3));
+                String warpSpec = getCellValueAsString(row.getCell(4));
+                String weftSpec = getCellValueAsString(row.getCell(5));
 
-                // 防呆：如果最核心的“成品零件号”为空，该行视为无效行，选择跳过而非崩溃
-                if (finishedPartNumber.isEmpty()) {
-                    skipCount++;
-                    continue;
-                }
+                if (finishedPartNumber.isEmpty()) { skipCount++; continue; }
 
-                // 查找并更新，或新建工艺
-                ProductProcess proc = processRepo.findByFinishedPartNumber(finishedPartNumber)
-                        .orElse(new ProductProcess());
-
+                ProductProcess proc = processRepo.findByFinishedPartNumber(finishedPartNumber).orElse(new ProductProcess());
                 proc.setFinishedPartNumber(finishedPartNumber);
+                proc.setFinishedModelSpec(finishedModelSpec); // 👈 存入规格
                 proc.setTapePartNumber(tapePartNumber.isEmpty() ? "DEFAULT" : tapePartNumber);
-                proc.setWarpSpec(warpSpec); // 支持空数据存入
-                proc.setWeftSpec(weftSpec); // 支持空数据存入
+                proc.setTapeModelSpec(tapeModelSpec);         // 👈 存入规格
+                proc.setWarpSpec(warpSpec);
+                proc.setWeftSpec(weftSpec);
                 proc.setEnteredBy(currentUser);
+                processRepo.save(proc);
 
                 processRepo.save(proc);
                 successCount++;
@@ -237,7 +544,7 @@ public class DataEntryService {
 
             // 1. 创建标题行及样式
             Row headerRow = sheet.createRow(0);
-            String[] headers = {"成品零件号", "带坯零件号", "经线型号", "纬线型号"};
+            String[] headers = {"成品零件号", "成品规格型号", "带坯零件号", "带坯规格型号", "经线型号", "纬线型号"};
 
             CellStyle headerStyle = workbook.createCellStyle();
             Font font = workbook.createFont();
@@ -254,12 +561,12 @@ public class DataEntryService {
             int rowIdx = 1;
             for (ProductProcess proc : processes) {
                 Row row = sheet.createRow(rowIdx++);
-
-                // 🌟 采用安全赋值，若字段为空则写出空字符串单元格
                 row.createCell(0).setCellValue(proc.getFinishedPartNumber() != null ? proc.getFinishedPartNumber() : "");
-                row.createCell(1).setCellValue(proc.getTapePartNumber() != null ? proc.getTapePartNumber() : "");
-                row.createCell(2).setCellValue(proc.getWarpSpec() != null ? proc.getWarpSpec() : "");
-                row.createCell(3).setCellValue(proc.getWeftSpec() != null ? proc.getWeftSpec() : "");
+                row.createCell(1).setCellValue(proc.getFinishedModelSpec() != null ? proc.getFinishedModelSpec() : "");
+                row.createCell(2).setCellValue(proc.getTapePartNumber() != null ? proc.getTapePartNumber() : "");
+                row.createCell(3).setCellValue(proc.getTapeModelSpec() != null ? proc.getTapeModelSpec() : "");
+                row.createCell(4).setCellValue(proc.getWarpSpec() != null ? proc.getWarpSpec() : "");
+                row.createCell(5).setCellValue(proc.getWeftSpec() != null ? proc.getWeftSpec() : "");
             }
 
             // 3. 自动调整列宽
@@ -391,6 +698,9 @@ public class DataEntryService {
             ProductProcess existing = processRepo.findById(proc.getId()).orElse(new ProductProcess());
             existing.setFinishedPartNumber(proc.getFinishedPartNumber().trim());
             existing.setTapePartNumber(proc.getTapePartNumber().trim());
+            // 👇 新增规格的保存
+            existing.setFinishedModelSpec(proc.getFinishedModelSpec());
+            existing.setTapeModelSpec(proc.getTapeModelSpec());
             existing.setWarpSpec(proc.getWarpSpec());
             existing.setWeftSpec(proc.getWeftSpec());
             existing.setEnteredBy(currentUser);

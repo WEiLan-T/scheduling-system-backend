@@ -8,19 +8,28 @@ import java.time.LocalDate;
 public class WeavingEntryRequest {
     private Integer id;
     private LocalDate entryDate;
-    private String tapePartNumber;
-    private String tapeNumber; // 🌟 新增：支持前端传入带坯编号
     private String machineId;
-    private String workshopId;
+    private String tapePartNumber;
+    private String tapeNumber;
+    private BigDecimal capacityPerDay;
+
+    // 👇 同步新增对应字段
+    private String modelSpec;
     private String warpSpec;
     private String weftSpec;
+    private String shift;
+    private String operatorName;
+    private BigDecimal standardCapacity;
+    private BigDecimal standardHours;
+    private BigDecimal standardHourlyCapacity;
+    private BigDecimal performanceHours;
+
+    private Boolean isDataNormal;
+    private String remarks;
+    private BigDecimal totalDemand;
+    private String workshopId;
     private Integer bobbinCount;
     private String machineStatus;
     private String caliberLimit;
     private String adjacentMachine;
-    private String operatorName;
-    private BigDecimal capacityPerDay;
-    private Boolean isDataNormal;
-    private BigDecimal totalDemand;
-    private String remarks;
 }

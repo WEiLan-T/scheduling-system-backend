@@ -59,6 +59,40 @@ public class DataEntryController {
         return ResponseEntity.ok(dataEntryService.deleteCoexLog(id, principal.getName()));
     }
 
+    // ================== 🧶 织造车间 Excel 交互 ==================
+    @PostMapping("/weaving/import")
+    @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> importWeaving(@RequestParam("file") MultipartFile file, Principal principal) throws Exception {
+        return ResponseEntity.ok(dataEntryService.importWeavingExcel(file, principal.getName()));
+    }
+
+    @GetMapping("/weaving/export")
+    @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
+    public ResponseEntity<byte[]> exportWeaving() throws Exception {
+        byte[] bytes = dataEntryService.exportWeavingToExcel();
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.setContentDispositionFormData("attachment", "Weaving_Daily_Logs.xlsx");
+        return new ResponseEntity<>(bytes, headers, org.springframework.http.HttpStatus.OK);
+    }
+
+    // ================== 🗜️ 共挤车间 Excel 交互 ==================
+    @PostMapping("/coextrusion/import")
+    @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> importCoex(@RequestParam("file") MultipartFile file, Principal principal) throws Exception {
+        return ResponseEntity.ok(dataEntryService.importCoexExcel(file, principal.getName()));
+    }
+
+    @GetMapping("/coextrusion/export")
+    @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
+    public ResponseEntity<byte[]> exportCoex() throws Exception {
+        byte[] bytes = dataEntryService.exportCoexToExcel();
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.setContentDispositionFormData("attachment", "Coextrusion_Daily_Logs.xlsx");
+        return new ResponseEntity<>(bytes, headers, org.springframework.http.HttpStatus.OK);
+    }
+
     // ================== 📦 库存与调账 ==================
     @PostMapping("/inventory/adjust")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
