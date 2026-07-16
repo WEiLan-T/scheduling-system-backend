@@ -3,6 +3,22 @@ const { ElMessage, ElMessageBox } = ElementPlus;
 
 const app = createApp({
     setup() {
+        const executionCurrentTime = ref(Date.now());
+        onMounted(() => {
+            const token = localStorage.getItem('jwt_token');
+            const user = localStorage.getItem('current_user');
+            if (token && user) {
+                isLoggedIn.value = true; currentUser.value = user;
+                loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); loadOrders();
+            }
+            // 🌟 定时器：每小时 (3600000ms) 自动刷新一次，时间轴实时跳动更新
+            setInterval(() => {
+                executionCurrentTime.value = Date.now();
+                if (activeMenu.value === 'execution') {
+                    loadWeavingLogs(); loadCoexLogs();
+                }
+            }, 3600000);
+        });
         const getToday = () => {
             const d = new Date();
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -74,6 +90,11 @@ const app = createApp({
             else if (activeMenu.value === 'coex') { loadCoexLogs(); ElMessage.success('🔄 共挤历史台账同步刷新完成'); }
             else if (activeMenu.value === 'inventory') { loadInventory(); ElMessage.success('🔄 虚拟分批库存大盘已刷新'); }
             else if (activeMenu.value === 'order') { loadOrders(); ElMessage.success('🔄 销售合同档案订单库已刷新'); }
+            else if (activeMenu.value === 'execution') {
+                executionCurrentTime.value = Date.now();
+                loadWeavingLogs(); loadCoexLogs(); loadOrders();
+                ElMessage.success('🔄 仪表数据矩阵已全部获取并重算！');
+            }
             else if (activeMenu.value === 'estimation') {
                 if (estForm.orderId) { fetchInitialDraft(); } else { ElMessage.success('🔄 排产控制中心已就绪'); }
             }
@@ -316,6 +337,36 @@ const app = createApp({
             } catch (error) {}
         };
 
+        const ganttTimeline = computed(() => {
+            if (!estResult.value || !estResult.value.details) return [];
+            let minTime = new Date('2099-01-01').getTime();
+            let maxTime = new Date('2000-01-01').getTime();
+
+            estResult.value.details.forEach(d => {
+                if (d.weavingStart) minTime = Math.min(minTime, new Date(d.weavingStart).getTime());
+                if (d.weavingEnd) maxTime = Math.max(maxTime, new Date(d.weavingEnd).getTime());
+                if (d.coexStart) minTime = Math.min(minTime, new Date(d.coexStart).getTime());
+                if (d.coexEnd) maxTime = Math.max(maxTime, new Date(d.coexEnd).getTime());
+            });
+
+            const span = maxTime - minTime;
+            minTime -= span * 0.05; maxTime += span * 0.05; // 预留 5% 留白
+
+            const markers = [];
+            const days = span / (1000 * 60 * 60 * 24);
+            let step = 1; // 默认按天刻度
+            if (days > 15) step = Math.ceil(days / 10); // 如果跨度超15天，稀释刻度，防止重叠
+
+            for (let t = minTime; t <= maxTime; t += step * 24 * 3600 * 1000) {
+                const dateObj = new Date(t);
+                markers.push({
+                    left: ((t - minTime) / (maxTime - minTime) * 100) + '%',
+                    label: `${dateObj.getMonth() + 1}月${dateObj.getDate()}日`
+                });
+            }
+            return markers;
+        });
+
         // 🌟 生成横排长列时间轴 (甘特图数据模型)
         const ganttRows = computed(() => {
             if (!estResult.value || !estResult.value.details) return [];
@@ -387,6 +438,127 @@ const app = createApp({
             if (newVal === 'inventory') loadInventory(); if (newVal === 'weaving') loadWeavingLogs();
             if (newVal === 'coex') loadCoexLogs(); if (newVal === 'order') loadOrders(); if (newVal === 'process') loadProcesses();
         });
+        // ==========================================
+// 📈 实时订单执行仪表看板测算引擎 (分界测算核心)
+// ==========================================
+        const dashboardRows = computed(() => {
+            const now = executionCurrentTime.value;
+            const rows = [];
+
+            // 遍历织造机台
+            machineList.value.forEach(m => {
+                const logs = weavingLogList.value.filter(log => String(log.machineId) === String(m.machineId));
+                logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+                const latest = logs[0];
+
+                if (latest && m.machineStatus && m.machineStatus.includes('产')) {
+                    const tapePn = latest.tapePartNumber || '未知';
+                    const taskLogs = weavingLogList.value.filter(l => l.tapePartNumber === tapePn);
+                    const accum = taskLogs.reduce((sum, l) => sum + (l.capacityPerDay || 0), 0); // 真实累计米数
+                    const total = latest.totalDemand > 0 ? latest.totalDemand : accum * 1.5; // 如果没有总值打底
+
+                    const capPerDay = latest.capacityPerDay > 0 ? latest.capacityPerDay : 1500;
+                    const pastMs = (accum / capPerDay) * 24 * 3600 * 1000;
+                    const remaining = Math.max(0, total - accum);
+                    const futureMs = (remaining / capPerDay) * 24 * 3600 * 1000; // 预估剩余天数
+
+                    rows.push({
+                        id: 'W_' + m.machineId, label: `织造 ${m.machineId}#`, type: 'weaving',
+                        task: { partNumber: tapePn, orderId: '织造批次', accum, total, start: now - pastMs, end: now + futureMs, capPerDay }
+                    });
+                } else {
+                    rows.push({ id: 'W_' + m.machineId, label: `织造 ${m.machineId}#`, type: 'weaving', task: null });
+                }
+            });
+
+            // 遍历共挤产线
+            lineList.value.forEach(l => {
+                const logs = coexLogList.value.filter(log => String(log.lineId) === String(l.lineId));
+                logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+                const latest = logs[0];
+
+                if (latest && l.lineStatus && l.lineStatus.includes('产')) {
+                    const finishedPn = latest.finishedPartNumber || '未知';
+                    const orderId = latest.orderNumber || '未知';
+
+                    const taskLogs = coexLogList.value.filter(log => log.orderNumber === orderId && log.finishedPartNumber === finishedPn);
+                    const accum = taskLogs.reduce((sum, log) => sum + (log.capacityPerDay || 0), 0); // 真实累计
+
+                    let total = 0;
+                    orderList.value.forEach(o => {
+                        if (o.orderId === orderId) {
+                            const it = o.items.find(i => i.finishedPartNumber === finishedPn);
+                            if (it) total = it.metersPerRoll * it.rollCount; // 取得真实订单要求的总米数
+                        }
+                    });
+                    if (total === 0) total = accum * 1.5;
+
+                    const capPerDay = latest.capacityPerDay > 0 ? latest.capacityPerDay : 2000;
+                    const pastMs = (accum / capPerDay) * 24 * 3600 * 1000;
+                    const remaining = Math.max(0, total - accum);
+                    const futureMs = (remaining / capPerDay) * 24 * 3600 * 1000;
+
+                    rows.push({
+                        id: 'C_' + l.lineId, label: `共挤 ${l.lineId}#`, type: 'coex',
+                        task: { partNumber: finishedPn, orderId, accum, total, start: now - pastMs, end: now + futureMs, capPerDay }
+                    });
+                } else {
+                    rows.push({ id: 'C_' + l.lineId, label: `共挤 ${l.lineId}#`, type: 'coex', task: null });
+                }
+            });
+            return rows;
+        });
+
+// 计算大盘可视域的时钟范围 (自动兜底前后3天)
+        const dashboardBounds = computed(() => {
+            let minTime = executionCurrentTime.value - (3 * 24 * 3600 * 1000);
+            let maxTime = executionCurrentTime.value + (3 * 24 * 3600 * 1000);
+            dashboardRows.value.forEach(r => {
+                if (r.task) {
+                    if (r.task.start < minTime) minTime = r.task.start;
+                    if (r.task.end > maxTime) maxTime = r.task.end;
+                }
+            });
+            const span = maxTime - minTime;
+            minTime -= span * 0.05; maxTime += span * 0.05; // 边缘留白
+            return { minTime, maxTime, span: maxTime - minTime };
+        });
+
+        const dashboardTimeline = computed(() => {
+            const { minTime, maxTime, span } = dashboardBounds.value;
+            const markers = [];
+            const days = span / (1000 * 60 * 60 * 24);
+            let step = Math.ceil(days / 10);
+            for (let t = minTime; t <= maxTime; t += step * 24 * 3600 * 1000) {
+                const dateObj = new Date(t);
+                markers.push({ left: ((t - minTime) / span * 100) + '%', label: `${dateObj.getMonth() + 1}/${dateObj.getDate()}` });
+            }
+            return markers;
+        });
+
+        const currentLineX = computed(() => {
+            const { minTime, span } = dashboardBounds.value;
+            return ((executionCurrentTime.value - minTime) / span * 100) + '%';
+        });
+
+        const dashboardRowsWithPos = computed(() => {
+            const { minTime, span } = dashboardBounds.value;
+            return dashboardRows.value.map(r => {
+                if (r.task) {
+                    const s = Math.max(minTime, r.task.start);
+                    const e = Math.min(minTime + span, r.task.end);
+                    r.task.left = ((s - minTime) / span * 100) + '%';
+                    r.task.width = ((e - s) / span * 100) + '%';
+
+                    // 实时切分界线颜色比例：左绿右蓝
+                    const current = executionCurrentTime.value;
+                    if (current > r.task.end) r.task.pastPct = '100%';
+                    else if (current < r.task.start) r.task.pastPct = '0%';
+                    else r.task.pastPct = ((current - r.task.start) / (r.task.end - r.task.start) * 100) + '%';
+                }
+                return r;
+            });
+        });
 
         return {
             isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect, refreshCurrentPage, machineList, lineList,
@@ -394,9 +566,10 @@ const app = createApp({
             coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm, coexFileRef, exportCoexExcel, handleCoexImport, coexSearch, coexPage, paginatedCoexLogs, coexTotal,
             invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv, invPage, paginatedInventoryList, invTotal,
             orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, simulateOrder, simDialogVisible, simResult, orderPage, paginatedOrderList, orderTotal,
-            estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity,
+            estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity,
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processSearch, processPage, paginatedProcessList, processTotal,
-            allWeavingMachines, factoryLines
+            allWeavingMachines, factoryLines,
+            executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos,
         };
     }
 });

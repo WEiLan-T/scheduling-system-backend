@@ -60,7 +60,7 @@
 
     <div v-else class="app-container">
         <div class="header">
-            <h2 style="margin: 0; font-size: 20px;">🏭 智能排产与制造执行系统（0.1.5）</h2>
+            <h2 style="margin: 0; font-size: 20px;">🏭 智能排产与制造执行系统（0.1.6）</h2>
             <div style="display: flex; align-items: center;">
                 <el-button type="info" size="small" plain @click="refreshCurrentPage">🔄 极速刷新</el-button>
                 <el-tag type="success" effect="dark" style="margin: 0 15px; font-size: 14px;">当前签到: {{ currentUser }}</el-tag>
@@ -73,6 +73,9 @@
                 <el-menu :default-active="activeMenu" @select="handleMenuSelect">
                     <el-menu-item-group title="全厂可视化大盘">
                         <el-menu-item index="dashboard"><span>🗺️ 厂区双车间全景监控</span></el-menu-item>
+                    </el-menu-item-group>
+                    <el-menu-item-group title="大盘与仪表">
+                        <el-menu-item index="execution"><span>📈 订单执行实时看板</span></el-menu-item>
                     </el-menu-item-group>
                     <el-menu-item-group title="MES 执行控制">
                         <el-menu-item index="weaving"><span>🧶 织造车间台账与数据</span></el-menu-item>
@@ -532,9 +535,14 @@
                             <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 25px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">
                                 <div style="display: flex; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 8px;">
                                     <div style="width: 180px; flex-shrink: 0; font-weight: bold; color: #64748b;">排产节点轨道</div>
-                                    <div style="flex-grow: 1; text-align: center; color: #94a3b8; font-size: 12px; font-style: italic;">◄ 时间轴流动方向 ►</div>
+                                    <div style="flex-grow: 1; position: relative; height: 25px;">
+                                        <div v-for="marker in ganttTimeline" :key="marker.left" :style="{ left: marker.left }"
+                                             style="position: absolute; top: 0; font-size: 11px; font-weight: bold; color: #94a3b8; transform: translateX(-50%); border-left: 1px dashed #cbd5e1; padding-left: 5px; height: 100%;">
+                                            {{ marker.label }}
+                                        </div>
+                                    </div>
                                 </div>
-                                <div v-for="row in ganttRows" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 46px;">
+                                <div v-for="row in ganttRows" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 46px;">o
                                     <div style="width: 180px; flex-shrink: 0; font-weight: bold; font-size: 13px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px; box-sizing: border-box;">
                                         {{ row.label }}
                                     </div>
@@ -607,6 +615,70 @@
                         </el-form>
                         <template #footer><el-button type="primary" @click="submitManualCapacity">录入并继续推进排产</el-button></template>
                     </el-dialog>
+                </div>
+                <div v-show="activeMenu === 'execution'">
+                    <el-card shadow="hover">
+                        <template #header>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <b style="font-size: 16px; color: #0f766e;">📈 全厂订单生产执行实时动态仪表 (整点自动刷新计算)</b>
+                                <el-button size="small" type="primary" plain @click="refreshCurrentPage">立即手动刷新数据</el-button>
+                            </div>
+                        </template>
+
+                        <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; position: relative; min-height: 500px;">
+                            <div style="display: flex; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 8px;">
+                                <div style="width: 150px; flex-shrink: 0; font-weight: bold; color: #64748b;">全厂机台与产线群</div>
+                                <div style="flex-grow: 1; position: relative; height: 25px;">
+                                    <div v-for="m in dashboardTimeline" :key="m.left" :style="{ left: m.left }"
+                                         style="position: absolute; top: 0; font-size: 11px; font-weight: bold; color: #94a3b8; transform: translateX(-50%); border-left: 1px dashed #cbd5e1; padding-left: 5px; height: 100%;">
+                                        {{ m.label }}
+                                    </div>
+                                    <div :style="{ left: currentLineX }" style="position: absolute; top: 0; bottom: -2000px; width: 2px; background: rgba(239, 68, 68, 0.6); z-index: 10; pointer-events: none;">
+                                        <span style="position: absolute; top: -15px; left: -25px; font-size: 10px; color: #ef4444; font-weight: bold; background: white; padding: 0 4px; border-radius: 4px; border: 1px solid #ef4444;">实时分界</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div v-for="row in dashboardRowsWithPos" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 42px;">
+                                <div style="width: 150px; flex-shrink: 0; font-weight: bold; font-size: 12px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px; box-sizing: border-box;">
+                                    {{ row.label }}
+                                    <el-tag v-if="!row.task" size="small" type="info" style="margin-left: 5px;">空闲停摆</el-tag>
+                                </div>
+
+                                <div style="flex-grow: 1; position: relative; height: 100%; background: #f8fafc;">
+                                    <div v-if="row.task" :style="{ left: row.task.left, width: row.task.width }"
+                                         style="position: absolute; height: 26px; top: 8px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15); overflow: hidden; background: #e2e8f0;">
+
+                                        <div :style="{ width: row.task.pastPct }" style="position: absolute; left: 0; top: 0; height: 100%; background: #10b981; z-index: 1;"></div>
+                                        <div :style="{ left: row.task.pastPct, right: 0 }" style="position: absolute; top: 0; height: 100%; background: #3b82f6; opacity: 0.6; z-index: 1;"></div>
+
+                                        <el-tooltip placement="top" effect="dark">
+                                            <template #content>
+                                                <div style="font-size: 13px; line-height: 1.6;">
+                                                    <b>【当前在产任务实况】</b><br/>
+                                                    所属生产订单：<b style="color: #fde047;">{{ row.task.orderId }}</b><br/>
+                                                    成品零件号：{{ row.task.partNumber }}<br/>
+                                                    <hr style="border: 0; border-top: 1px dashed #64748b; margin: 5px 0;">
+                                                    按历史台账真实累计：<b style="color: #4ade80;">{{ row.task.accum.toFixed(1) }} 米</b><br/>
+                                                    订单下达总目标值：<b style="color: #38bdf8;">{{ row.task.total.toFixed(1) }} 米</b><br/>
+                                                    机台产能预估基数：{{ row.task.capPerDay }} 米/天<br/>
+                                                    系统智能测算完工日：{{ new Date(row.task.end).toLocaleString() }}
+                                                </div>
+                                            </template>
+                                            <span style="position: relative; z-index: 2; padding: 0 5px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">
+                                {{ row.task.orderId !== '未知' ? row.task.orderId + ' - ' : '' }}{{ row.task.partNumber }} (进度: {{ ((row.task.accum / row.task.total)*100).toFixed(1) }}%)
+                            </span>
+                                        </el-tooltip>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 15px; display: flex; gap: 15px; font-size: 12px; color: #64748b;">
+                            <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #10b981; border-radius: 2px;"></div> 分界线前：基于您历史录入数据的【真实累计生产部分】</div>
+                            <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #3b82f6; opacity: 0.6; border-radius: 2px;"></div> 分界线后：基于当前日产能预估计算的【未完成部分】及截机时间</div>
+                        </div>
+                    </el-card>
                 </div>
             </div>
         </div>
