@@ -14,10 +14,11 @@ public class ScheduleAdjustmentRequest {
     @Data
     public static class ItemAdjustment {
         private String finishedPartNumber;
-
-        // 👇 核心修复：排产算法所需的人工干预推演参数
         private BigDecimal manualWeavingChangeoverDays;
         private BigDecimal manualCoexCapacity;
         private Integer manualStartDelayDays;
+
+        // 👇 新增：用于兜底系统无法查到历史平均产能时的手工录入
+        private BigDecimal manualWeavingCapacity;
     }
 }
