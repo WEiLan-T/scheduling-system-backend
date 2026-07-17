@@ -60,7 +60,7 @@
 
     <div v-else class="app-container">
         <div class="header">
-            <h2 style="margin: 0; font-size: 20px;">🏭 智能排产与制造执行系统（0.1.6）</h2>
+            <h2 style="margin: 0; font-size: 20px;">🏭 智能排产与制造执行系统（0.1.7）</h2>
             <div style="display: flex; align-items: center;">
                 <el-button type="info" size="small" plain @click="refreshCurrentPage">🔄 极速刷新</el-button>
                 <el-tag type="success" effect="dark" style="margin: 0 15px; font-size: 14px;">当前签到: {{ currentUser }}</el-tag>
@@ -523,6 +523,8 @@
                         </template>
                         <el-form :inline="true" :model="estForm">
                             <el-form-item label="加载销售订单号"><el-input v-model="estForm.orderId" placeholder="输入订单统编号..."></el-input></el-form-item>
+                            <el-form-item label="交期全局缓冲(天)"><el-input-number v-model="estForm.globalBufferDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
+                            <el-form-item label="织造提前结束(天)"><el-input-number v-model="estForm.weavingAdvanceDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
                             <el-form-item><el-button type="success" @click="fetchInitialDraft" :loading="loading" icon="Operation">开启逆向推演</el-button></el-form-item>
                         </el-form>
 
@@ -659,15 +661,14 @@
                                                     所属生产订单：<b style="color: #fde047;">{{ row.task.orderId }}</b><br/>
                                                     成品零件号：{{ row.task.partNumber }}<br/>
                                                     <hr style="border: 0; border-top: 1px dashed #64748b; margin: 5px 0;">
-                                                    按历史台账真实累计：<b style="color: #4ade80;">{{ row.task.accum.toFixed(1) }} 米</b><br/>
-                                                    订单下达总目标值：<b style="color: #38bdf8;">{{ row.task.total.toFixed(1) }} 米</b><br/>
                                                     机台产能预估基数：{{ row.task.capPerDay }} 米/天<br/>
-                                                    系统智能测算完工日：{{ new Date(row.task.end).toLocaleString() }}
+                                                    系统智能测算完工日：{{ new Date(row.task.end).toLocaleString() }}<br/>
+                                                    当前完成进度：{{ ((row.task.accum / row.task.total)*100).toFixed(1) }}%
                                                 </div>
                                             </template>
                                             <span style="position: relative; z-index: 2; padding: 0 5px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">
-                                {{ row.task.orderId !== '未知' ? row.task.orderId + ' - ' : '' }}{{ row.task.partNumber }} (进度: {{ ((row.task.accum / row.task.total)*100).toFixed(1) }}%)
-                            </span>
+                                                {{ row.task.accum.toFixed(1) }} / {{ row.task.total.toFixed(1) }} m
+                                            </span>
                                         </el-tooltip>
                                     </div>
                                 </div>

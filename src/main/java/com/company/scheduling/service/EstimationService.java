@@ -98,6 +98,10 @@ public class EstimationService {
                 ? req.getDraftOrders() : orderRepo.findByOrderId(req.getOrderId());
         if (orders == null || orders.isEmpty()) throw new RuntimeException("查无此订单，请核对订单号！");
 
+        // 读取人工调整参数（若前端未传则使用默认值）
+        int bufferDays = req.getGlobalBufferDays() != null ? req.getGlobalBufferDays() : 3;
+        int weaveAdvance = req.getWeavingAdvanceDays() != null ? req.getWeavingAdvanceDays() : 2;
+
         LocalDateTime overallStartDate = LocalDateTime.MAX;
         LocalDateTime overallEndDate = LocalDateTime.MIN;
         List<Map<String, Object>> itemSchedules = new ArrayList<>();
@@ -106,8 +110,9 @@ public class EstimationService {
         List<CoexLineStatus> allCLines = coexStatusRepo.findAll();
 
         for (ProductionOrder item : orders) {
+            // 🌟 优化3：织造预计生产量调整为与共挤一致，取消 1.10 系数
             BigDecimal finishedMeters = item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
-            BigDecimal tapeMetersNeeded = finishedMeters.multiply(new BigDecimal("1.10"));
+            BigDecimal tapeMetersNeeded = finishedMeters;
 
             ProductProcess proc = processRepo.findByFinishedPartNumber(item.getFinishedPartNumber())
                     .orElseThrow(() -> new RuntimeException("MISSING_PROCESS:" + item.getFinishedPartNumber()));
@@ -128,23 +133,23 @@ public class EstimationService {
             if (itemAdj != null) {
                 if (itemAdj.getManualWeavingCapacity() != null) wCap = itemAdj.getManualWeavingCapacity();
                 if (itemAdj.getManualCoexCapacity() != null) cCap = itemAdj.getManualCoexCapacity();
-                if (itemAdj.getManualWeavingChangeoverDays() != null) changeoverDays = itemAdj.getManualWeavingChangeoverDays();
-                if (itemAdj.getManualStartDelayDays() != null) delayDays = itemAdj.getManualStartDelayDays();
             }
             if (wCap.compareTo(BigDecimal.ZERO) == 0 || cCap.compareTo(BigDecimal.ZERO) == 0) throw new RuntimeException("MISSING_CAPACITY:" + item.getFinishedPartNumber() + ":" + tapePartNumber);
 
-            LocalDateTime deadline = item.getDeliveryDate() != null ? item.getDeliveryDate().atTime(23, 59, 59) : LocalDate.now().plusDays(30).atTime(23, 59, 59);
-            LocalDateTime now = LocalDateTime.now();
+            // ================= JIT 产能测算与排产重构 =================
+            // 🌟 优化1：为所有规划留出 bufferDays 的时间
+            LocalDateTime rawDeadline = item.getDeliveryDate() != null ? item.getDeliveryDate().atTime(23, 59, 59) : LocalDate.now().plusDays(30).atTime(23, 59, 59);
+            LocalDateTime deadline = rawDeadline.minusDays(bufferDays);
 
+            LocalDateTime now = LocalDateTime.now();
             long availableHours = ChronoUnit.HOURS.between(now, deadline);
             if (availableHours <= 0) availableHours = 1;
 
             double wHoursNeeded = shortfall.compareTo(BigDecimal.ZERO) > 0 ? shortfall.divide(wCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0 : 0;
             double cHoursNeeded = finishedMeters.divide(cCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0;
-
             int splitCount = 1;
             double maxHoursNeeded = Math.max(wHoursNeeded, cHoursNeeded);
-            if (maxHoursNeeded > availableHours) splitCount = (int) Math.ceil(maxHoursNeeded / availableHours); // 产能不足自动裂变拆单
+            if (maxHoursNeeded > availableHours) splitCount = (int) Math.ceil(maxHoursNeeded / availableHours);
 
             Double caliber = extractCaliber(proc.getFinishedModelSpec());
             List<WeavingMachineStatus> candidateWMachines = findBestWeavingMachines(caliber, allWMachines);
@@ -160,18 +165,17 @@ public class EstimationService {
             Set<String> usedC = new HashSet<>();
 
             for (int i = 0; i < splitCount; i++) {
-                // 1. 优先挑出可用的共挤产线
+                // ... 车间号提取与分数匹配原逻辑保持不变 ...
                 CoexLineStatus cl = candidateCLines.stream().filter(l -> !usedC.contains(l.getLineId())).findFirst().orElse(null);
                 if (cl != null) usedC.add(cl.getLineId());
                 Integer targetWs = cl != null ? extractWorkshopNumber(cl.getWorkshopId()) : null;
 
-                // 2. 根据共挤产线的车间号，反向打分寻找最完美的织造机台（同车间+80分权重）
                 WeavingMachineStatus wm = candidateWMachines.stream()
                         .filter(m -> !usedW.contains(m.getMachineId()))
                         .max(Comparator.comparingInt(m -> {
                             int score = scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines);
                             Integer mWs = extractWorkshopNumber(m.getWorkshopId());
-                            if (targetWs != null && targetWs.equals(mWs)) score += 80; // 🌟 核心：车间 123 对应安排
+                            if (targetWs != null && targetWs.equals(mWs)) score += 80;
                             return score;
                         })).orElse(null);
                 if (wm != null) usedW.add(wm.getMachineId());
@@ -179,13 +183,17 @@ public class EstimationService {
                 BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
                 BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
 
-                // JIT 同步结束逻辑：两者共同以 Deadline 为结点反推
+                // 🌟 优化2：将织造提前 2天（weaveAdvance）结束生产
                 LocalDateTime coexEnd = deadline;
                 LocalDateTime coexStart = coexEnd.minusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
-                LocalDateTime weavingEnd = deadline;
+
+                LocalDateTime weavingEnd = coexEnd.minusDays(weaveAdvance);
                 LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
 
-                if (shortfall.compareTo(BigDecimal.ZERO) > 0 && weavingStart.isAfter(coexStart)) weavingStart = coexStart;
+                // 确保织造开机时间依然比共挤开机时间早至少 weaveAdvance 天
+                if (shortfall.compareTo(BigDecimal.ZERO) > 0 && weavingStart.isAfter(coexStart.minusDays(weaveAdvance))) {
+                    weavingStart = coexStart.minusDays(weaveAdvance);
+                }
 
                 if (weavingStart.isBefore(now) || coexStart.isBefore(now)) {
                     LocalDateTime earliest = weavingStart.isBefore(coexStart) ? weavingStart : coexStart;

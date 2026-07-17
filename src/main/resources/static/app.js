@@ -285,7 +285,12 @@ const app = createApp({
         // ==========================================
         // 📊 智能排产大盘 (APS核心引擎)
         // ==========================================
-        const estForm = reactive({ orderId: '', itemAdjustments: [] });
+        const estForm = reactive({
+            orderId: '',
+            itemAdjustments: [],
+            globalBufferDays: 3,        // 新增：向后缓冲天数
+            weavingAdvanceDays: 2       // 新增：织造提前结束天数
+        });
         const estResult = ref(null);
 
         // 应对产能缺失的手工录入弹窗

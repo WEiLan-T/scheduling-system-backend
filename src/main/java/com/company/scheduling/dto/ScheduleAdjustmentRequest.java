@@ -11,14 +11,16 @@ public class ScheduleAdjustmentRequest {
     private List<ProductionOrder> draftOrders;
     private List<ItemAdjustment> itemAdjustments;
 
+    // 🌟 新增：人工调整接口（全局配置）
+    private Integer globalBufferDays = 3;     // 默认所有订单留出 3 天缓冲期
+    private Integer weavingAdvanceDays = 2;   // 默认织造比共挤提前 2 天结束
+
     @Data
     public static class ItemAdjustment {
         private String finishedPartNumber;
         private BigDecimal manualWeavingChangeoverDays;
         private BigDecimal manualCoexCapacity;
         private Integer manualStartDelayDays;
-
-        // 👇 新增：用于兜底系统无法查到历史平均产能时的手工录入
         private BigDecimal manualWeavingCapacity;
     }
 }
