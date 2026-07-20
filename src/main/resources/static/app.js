@@ -3,22 +3,32 @@ const { ElMessage, ElMessageBox } = ElementPlus;
 
 const app = createApp({
     setup() {
-        const executionCurrentTime = ref(Date.now());
+        const executionCurrentTime = computed(() => {
+            let maxTime = 0;
+            const parseDateEnd = (dStr) => {
+                if (!dStr) return 0;
+                return new Date(dStr + 'T23:59:59').getTime();
+            };
+            weavingLogList.value.forEach(log => {
+                const t = parseDateEnd(log.entryDate);
+                if (t > maxTime) maxTime = t;
+            });
+            coexLogList.value.forEach(log => {
+                const t = parseDateEnd(log.entryDate);
+                if (t > maxTime) maxTime = t;
+            });
+            return maxTime > 0 ? maxTime : Date.now();
+        });
+
         onMounted(() => {
             const token = localStorage.getItem('jwt_token');
             const user = localStorage.getItem('current_user');
             if (token && user) {
                 isLoggedIn.value = true; currentUser.value = user;
-                loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); loadOrders();
+                loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); loadOrders(); loadProcesses();
             }
-            // 🌟 定时器：每小时 (3600000ms) 自动刷新一次，时间轴实时跳动更新
-            setInterval(() => {
-                executionCurrentTime.value = Date.now();
-                if (activeMenu.value === 'execution') {
-                    loadWeavingLogs(); loadCoexLogs();
-                }
-            }, 3600000);
         });
+
         const getToday = () => {
             const d = new Date();
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -26,7 +36,7 @@ const app = createApp({
 
         const isLoggedIn = ref(false);
         const currentUser = ref('');
-        const activeMenu = ref('dashboard'); // 默认登入后展示全厂全景仪表
+        const activeMenu = ref('dashboard');
         const loading = ref(false);
 
         const machineList = ref([]);
@@ -58,15 +68,6 @@ const app = createApp({
             } catch (e) {}
         };
 
-        onMounted(() => {
-            const token = localStorage.getItem('jwt_token');
-            const user = localStorage.getItem('current_user');
-            if (token && user) {
-                isLoggedIn.value = true; currentUser.value = user;
-                loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory();
-            }
-        });
-
         const loginForm = reactive({ username: '', password: '' });
         const handleLogin = async () => {
             if (!loginForm.username || !loginForm.password) return;
@@ -76,10 +77,11 @@ const app = createApp({
                 if (res.data && res.data.includes('eyJ')) {
                     localStorage.setItem('jwt_token', res.data.trim()); localStorage.setItem('current_user', loginForm.username);
                     isLoggedIn.value = true; currentUser.value = loginForm.username; ElMessage.success('核验通过！');
-                    loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory();
+                    loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); loadOrders(); loadProcesses();
                 }
             } catch (error) { if(error.response && error.response.status === 401) ElMessage.error('账号或密码错误！'); } finally { loading.value = false; }
         };
+
         const handleLogout = () => { localStorage.clear(); isLoggedIn.value = false; };
         const handleMenuSelect = (index) => { activeMenu.value = index; estResult.value = null; };
 
@@ -91,9 +93,8 @@ const app = createApp({
             else if (activeMenu.value === 'inventory') { loadInventory(); ElMessage.success('🔄 虚拟分批库存大盘已刷新'); }
             else if (activeMenu.value === 'order') { loadOrders(); ElMessage.success('🔄 销售合同档案订单库已刷新'); }
             else if (activeMenu.value === 'execution') {
-                executionCurrentTime.value = Date.now();
                 loadWeavingLogs(); loadCoexLogs(); loadOrders();
-                ElMessage.success('🔄 仪表数据矩阵已全部获取并重算！');
+                ElMessage.success('🔄 全厂订单执行仪表板实时数据获取成功！');
             }
             else if (activeMenu.value === 'estimation') {
                 if (estForm.orderId) { fetchInitialDraft(); } else { ElMessage.success('🔄 排产控制中心已就绪'); }
@@ -101,7 +102,7 @@ const app = createApp({
         };
 
         // ==========================================
-        // 🧶 织造车间 MES (含搜索与分页)
+        // 🧶 织造车间 MES
         // ==========================================
         const weavingLogList = ref([]); const weavingFileRef = ref(null);
         const weavingSearch = reactive({ tapePartNumber: '', tapeNumber: '', machineId: '' });
@@ -127,6 +128,17 @@ const app = createApp({
             performanceHours: 0, isDataNormal: true, totalDemand: 0, remarks: '', workshopId: '织造车间'
         });
 
+        watch(() => weavingForm.tapePartNumber, (newVal) => {
+            if (newVal && processList.value.length > 0) {
+                const proc = processList.value.find(p => p.tapePartNumber === newVal);
+                if (proc) {
+                    if (!weavingForm.modelSpec && proc.tapeModelSpec) weavingForm.modelSpec = proc.tapeModelSpec;
+                    if (!weavingForm.warpSpec && proc.warpSpec) weavingForm.warpSpec = proc.warpSpec;
+                    if (!weavingForm.weftSpec && proc.weftSpec) weavingForm.weftSpec = proc.weftSpec;
+                }
+            }
+        });
+
         const resetWeavingForm = () => {
             weavingForm.id = null; weavingForm.tapePartNumber = ''; weavingForm.tapeNumber = '';
             weavingForm.modelSpec = ''; weavingForm.warpSpec = ''; weavingForm.weftSpec = '';
@@ -149,7 +161,7 @@ const app = createApp({
         const handleWeavingImport = async (e) => { const file = e.target.files[0]; if (!file) return; const fd = new FormData(); fd.append('file', file); loading.value = true; try { const res = await axios.post('/api/v1/workshops/integration/weaving/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); ElMessage.success(res.data); loadWeavingLogs(); } catch(err) {} finally { loading.value = false; e.target.value = ''; } };
 
         // ==========================================
-        // 🗜️ 共挤车间 MES (含搜索与分页)
+        // 🗜️ 共挤车间 MES
         // ==========================================
         const coexLogList = ref([]); const coexFileRef = ref(null);
         const coexSearch = reactive({ orderNumber: '', lineId: '', finishedPartNumber: '', semiFinishedNumber: '', tapePartNumber: '' });
@@ -177,6 +189,25 @@ const app = createApp({
             capacityPerDay: 0, isDataNormal: true, tapeDemandQty: 0, tapePartNumber: '', tapeNumber: '', remarks: ''
         });
 
+        watch(() => coexForm.orderNumber, (newVal) => {
+            if (newVal && orderList.value.length > 0) {
+                const order = orderList.value.find(o => String(o.orderId) === String(newVal));
+                if (order && order.items && order.items.length > 0) {
+                    const item = order.items[0];
+                    if (!coexForm.finishedPartNumber) coexForm.finishedPartNumber = item.finishedPartNumber;
+                    if (!coexForm.finishedModelSpec) coexForm.finishedModelSpec = item.modelSpec;
+                }
+            }
+        });
+        watch(() => coexForm.finishedPartNumber, (newVal) => {
+            if (newVal && processList.value.length > 0) {
+                const proc = processList.value.find(p => p.finishedPartNumber === newVal);
+                if (proc && !coexForm.tapePartNumber) {
+                    coexForm.tapePartNumber = proc.tapePartNumber;
+                }
+            }
+        });
+
         const resetCoexForm = () => {
             coexForm.id = null; coexForm.orderNumber = ''; coexForm.finishedPartNumber = ''; coexForm.semiFinishedNumber = '';
             coexForm.finishedModelSpec = ''; coexForm.tapeNumber = ''; coexForm.productionSpeed = 0; coexForm.capacityPerDay = 0;
@@ -200,7 +231,6 @@ const app = createApp({
         // 📦 虚拟库存总览
         // ==========================================
         const invSearchKeyword = ref(''); const inventoryList = ref([]); const invLoading = ref(false); const invDialogVisible = ref(false); const invSaveLoading = ref(false); const invForm = reactive({ id: null, entryDate: getToday(), tapePartNumber: '', tapeNumber: '', finishedPartNumber: '', currentStockMeters: 0 });
-
         const invPage = ref(1);
         const paginatedInventoryList = computed(() => {
             const start = (invPage.value - 1) * 10;
@@ -232,7 +262,6 @@ const app = createApp({
         // ==========================================
         const processList = ref([]); const processFileRef = ref(null); const processDialogVisible = ref(false);
         const processForm = reactive({ id: null, finishedPartNumber: '', tapePartNumber: '', warpSpec: '', weftSpec: '' });
-
         const processSearch = reactive({ finishedPartNumber: '', tapePartNumber: '' });
         const processPage = ref(1);
         const filteredProcessList = computed(() => {
@@ -257,14 +286,14 @@ const app = createApp({
         const exportProcessExcel = async () => { try { const response = await axios.get('/api/v1/workshops/integration/process/export', { responseType: 'blob' }); const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '工艺路线数据大盘.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch (error) { ElMessage.error('导出失败，请检查服务器！'); } };
         const handleProcessImport = async (event) => { const file = event.target.files[0]; if (!file) return; const formData = new FormData(); formData.append('file', file); loading.value = true; try { const response = await axios.post('/api/v1/workshops/integration/process/import', formData, { headers: { 'Content-Type': 'multipart/form-data' } }); ElMessage.success(response.data); loadProcesses(); } catch (error) {} finally { loading.value = false; event.target.value = ''; } };
 
-        // ==========================================
+        //==========================================
         // 🛒 销售订单核心
         // ==========================================
         const isOrderEditMode = ref(false); const orderList = ref([]); const simDialogVisible = ref(false); const simResult = ref(null);
-        const orderHeader = reactive({ orderId: '', placerName: '', orderDate: getToday(), deliveryDate: '' });
-        const orderItems = ref([{ finishedPartNumber: '', modelSpec: '', material: '', caliber: '', metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }]);
+        const orderHeader = reactive({ orderId: '', customerName: '', salesperson: '', orderDate: getToday(), deliveryDate: '' });
+        const orderItems = ref([{ finishedPartNumber: '', productName: '', modelSpec: '', color: '', unfinishedMeters: 0, metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }]);
+        const orderPage = ref(1); const orderFileRef = ref(null);
 
-        const orderPage = ref(1);
         const paginatedOrderList = computed(() => {
             const start = (orderPage.value - 1) * 10;
             return orderList.value.slice(start, start + 10);
@@ -272,15 +301,44 @@ const app = createApp({
         const orderTotal = computed(() => orderList.value.length);
         watch(orderList, () => { orderPage.value = 1; });
 
-        const resetOrderForm = () => { isOrderEditMode.value = false; Object.assign(orderHeader, { orderId: '', placerName: '', orderDate: getToday(), deliveryDate: '' }); orderItems.value = [{ finishedPartNumber: '', modelSpec: '', material: '', caliber: '', metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }]; };
+        const resetOrderForm = () => { isOrderEditMode.value = false; Object.assign(orderHeader, { orderId: '', customerName: '', salesperson: '', orderDate: getToday(), deliveryDate: '' }); orderItems.value = [{ finishedPartNumber: '', productName: '', modelSpec: '', color: '', unfinishedMeters: 0, metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }]; };
         const calcTotal = (row) => { row.totalLength = (row.metersPerRoll * row.rollCount).toFixed(2); };
-        const addOrderItem = () => { orderItems.value.push({ finishedPartNumber: '', modelSpec: '', material: '', caliber: '', metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }); };
+        const addOrderItem = () => { orderItems.value.push({ finishedPartNumber: '', productName: '', modelSpec: '', color: '', unfinishedMeters: 0, metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }); };
         const removeOrderItem = (index) => { if (orderItems.value.length > 1) orderItems.value.splice(index, 1); else ElMessage.warning('至少保留一行！'); };
-        const loadOrders = async () => { try { const res = await axios.get('/api/v1/workshops/orders/list'); const map = {}; res.data.forEach(item => { if (!map[item.orderId]) map[item.orderId] = { orderId: item.orderId, orderDate: item.orderDate, deliveryDate: item.deliveryDate, placerName: item.placerName, items: [] }; map[item.orderId].items.push(item); }); orderList.value = Object.values(map); } catch(e) {} };
-        const submitOrder = async () => { if (!orderHeader.orderId) { ElMessage.error('请填写订单号！'); return; } loading.value = true; const payload = orderItems.value.map(item => ({ ...orderHeader, ...item })); try { if (isOrderEditMode.value) await axios.put(`/api/v1/workshops/orders/${orderHeader.orderId}`, payload); else await axios.post('/api/v1/workshops/orders/batch', payload); ElMessage.success('操作成功！'); loadOrders(); resetOrderForm(); simDialogVisible.value = false; } catch (error) {} finally { loading.value = false; } };
-        const editOrder = (row) => { isOrderEditMode.value = true; Object.assign(orderHeader, { orderId: row.orderId, placerName: row.placerName, orderDate: row.orderDate, deliveryDate: row.deliveryDate }); orderItems.value = JSON.parse(JSON.stringify(row.items)); orderItems.value.forEach(item => calcTotal(item)); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+
+        const loadOrders = async () => {
+            try {
+                const res = await axios.get('/api/v1/workshops/orders/list');
+                const map = {};
+                res.data.forEach(item => {
+                    if (!map[item.orderId]) map[item.orderId] = { orderId: item.orderId, orderDate: item.orderDate, deliveryDate: item.deliveryDate, customerName: item.customerName, salesperson: item.salesperson, items: [] };
+                    map[item.orderId].items.push(item);
+                });
+                orderList.value = Object.values(map);
+            } catch(e) {}
+        };
+
+        const submitOrder = async () => {
+            if (!orderHeader.orderId) { ElMessage.error('请填写订单号！'); return; }
+            loading.value = true; const payload = orderItems.value.map(item => ({ ...orderHeader, ...item }));
+            try {
+                if (isOrderEditMode.value) await axios.put(`/api/v1/workshops/orders/${orderHeader.orderId}`, payload);
+                else await axios.post('/api/v1/workshops/orders/batch', payload);
+                ElMessage.success('操作成功！'); loadOrders(); resetOrderForm(); simDialogVisible.value = false;
+            } catch (error) {} finally { loading.value = false; }
+        };
+
+        const editOrder = (row) => {
+            isOrderEditMode.value = true;
+            Object.assign(orderHeader, { orderId: row.orderId, customerName: row.customerName, salesperson: row.salesperson, orderDate: row.orderDate, deliveryDate: row.deliveryDate });
+            orderItems.value = JSON.parse(JSON.stringify(row.items));
+            orderItems.value.forEach(item => calcTotal(item)); window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
         const deleteOrder = async (orderId) => { try { await ElMessageBox.confirm('数据将永久删除，确认执行？', '警告', { type: 'warning' }); await axios.delete(`/api/v1/workshops/orders/${orderId}`); ElMessage.success('订单已删除'); loadOrders(); if (orderHeader.orderId === orderId) resetOrderForm(); } catch (e) {} };
         const simulateOrder = async () => { if (!orderHeader.orderId) { ElMessage.warning('请先填写完整的订单号！'); return; } loading.value = true; const draftOrdersPayload = orderItems.value.map(item => ({ ...orderHeader, ...item })); try { const res = await axios.post('/api/v1/workshops/estimation/preview', { orderId: orderHeader.orderId, draftOrders: draftOrdersPayload }); simResult.value = res.data; simDialogVisible.value = true; ElMessage.success('🔮 草稿推演完毕！'); } catch (e) {} finally { loading.value = false; } };
+
+        const exportOrderExcel = async () => { try { const res = await axios.get('/api/v1/workshops/orders/export', { responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '生产订单排产明细.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
+        const handleOrderImport = async (e) => { const file = e.target.files[0]; if (!file) return; const fd = new FormData(); fd.append('file', file); loading.value = true; try { const res = await axios.post('/api/v1/workshops/orders/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); ElMessage.success(res.data); loadOrders(); } catch(err) {} finally { loading.value = false; e.target.value = ''; } };
 
         // ==========================================
         // 📊 智能排产大盘 (APS核心引擎)
@@ -288,12 +346,10 @@ const app = createApp({
         const estForm = reactive({
             orderId: '',
             itemAdjustments: [],
-            globalBufferDays: 3,        // 新增：向后缓冲天数
-            weavingAdvanceDays: 2       // 新增：织造提前结束天数
+            globalBufferDays: 3,
+            weavingAdvanceDays: 2
         });
         const estResult = ref(null);
-
-        // 应对产能缺失的手工录入弹窗
         const capacityDialogVisible = ref(false);
         const capacityPrompt = reactive({ finishedPartNumber: '', tapePartNumber: '' });
         const manualCap = reactive({ weaving: 0, coex: 0 });
@@ -330,7 +386,7 @@ const app = createApp({
                 manualCoexCapacity: manualCap.coex
             }];
             capacityDialogVisible.value = false;
-            fetchInitialDraft(); // 携带手工干预值重试排产
+            fetchInitialDraft();
         };
 
         const commitFinalScheduleToDb = async () => {
@@ -346,21 +402,19 @@ const app = createApp({
             if (!estResult.value || !estResult.value.details) return [];
             let minTime = new Date('2099-01-01').getTime();
             let maxTime = new Date('2000-01-01').getTime();
-
             estResult.value.details.forEach(d => {
                 if (d.weavingStart) minTime = Math.min(minTime, new Date(d.weavingStart).getTime());
                 if (d.weavingEnd) maxTime = Math.max(maxTime, new Date(d.weavingEnd).getTime());
                 if (d.coexStart) minTime = Math.min(minTime, new Date(d.coexStart).getTime());
                 if (d.coexEnd) maxTime = Math.max(maxTime, new Date(d.coexEnd).getTime());
             });
-
             const span = maxTime - minTime;
-            minTime -= span * 0.05; maxTime += span * 0.05; // 预留 5% 留白
+            minTime -= span * 0.05; maxTime += span * 0.05;
 
             const markers = [];
             const days = span / (1000 * 60 * 60 * 24);
-            let step = 1; // 默认按天刻度
-            if (days > 15) step = Math.ceil(days / 10); // 如果跨度超15天，稀释刻度，防止重叠
+            let step = 1;
+            if (days > 15) step = Math.ceil(days / 10);
 
             for (let t = minTime; t <= maxTime; t += step * 24 * 3600 * 1000) {
                 const dateObj = new Date(t);
@@ -372,37 +426,28 @@ const app = createApp({
             return markers;
         });
 
-        // 🌟 生成横排长列时间轴 (甘特图数据模型)
         const ganttRows = computed(() => {
             if (!estResult.value || !estResult.value.details) return [];
-
             let minTime = new Date('2099-01-01').getTime();
             let maxTime = new Date('2000-01-01').getTime();
-
             estResult.value.details.forEach(d => {
                 if (d.weavingStart) minTime = Math.min(minTime, new Date(d.weavingStart).getTime());
                 if (d.weavingEnd) maxTime = Math.max(maxTime, new Date(d.weavingEnd).getTime());
                 if (d.coexStart) minTime = Math.min(minTime, new Date(d.coexStart).getTime());
                 if (d.coexEnd) maxTime = Math.max(maxTime, new Date(d.coexEnd).getTime());
             });
-
-            // 首尾预留 5% 空白余量
             const span = maxTime - minTime;
             minTime -= span * 0.05; maxTime += span * 0.05;
             const totalSpan = maxTime - minTime;
-
             const rowsMap = new Map();
-            rowsMap.set('W_UNASSIGNED', { id: 'W_UNASSIGNED', label: '🧶 织造 (待指派机台任务池)', tasks: [] });
+            rowsMap.set('W_UNASSIGNED', { id: 'W_UNASSIGNED', label: '🧶 织造 (待指派)', tasks: [] });
             machineList.value.forEach(m => rowsMap.set('W_' + m.machineId, { id: 'W_' + m.machineId, label: '机台 ' + m.machineId + '#', tasks: [] }));
-
-            rowsMap.set('C_UNASSIGNED', { id: 'C_UNASSIGNED', label: '🗜️ 共挤 (待指派产线任务池)', tasks: [] });
+            rowsMap.set('C_UNASSIGNED', { id: 'C_UNASSIGNED', label: '🗜️ 共挤 (待指派)', tasks: [] });
             lineList.value.forEach(l => rowsMap.set('C_' + l.lineId, { id: 'C_' + l.lineId, label: '产线 ' + l.lineId + '#', tasks: [] }));
 
             const colors = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ec4899', '#f43f5e'];
-
             estResult.value.details.forEach((d, idx) => {
                 const color = colors[idx % colors.length];
-
                 if (d.weavingStart) {
                     const s = new Date(d.weavingStart).getTime(); const e = new Date(d.weavingEnd).getTime();
                     const task = {
@@ -414,7 +459,6 @@ const app = createApp({
                     const rId = d.plannedMachine ? 'W_' + d.plannedMachine : 'W_UNASSIGNED';
                     if(rowsMap.has(rId)) rowsMap.get(rId).tasks.push(task);
                 }
-
                 if (d.coexStart) {
                     const s = new Date(d.coexStart).getTime(); const e = new Date(d.coexEnd).getTime();
                     const task = {
@@ -427,85 +471,282 @@ const app = createApp({
                     if(rowsMap.has(rId)) rowsMap.get(rId).tasks.push(task);
                 }
             });
-
-            // 过滤掉没有任何任务的轨道，保持图表清爽
             return Array.from(rowsMap.values()).filter(r => r.tasks.length > 0);
         });
 
-        // 厂区暴露状态
-        const getStatusClass = (status) => { if (!status) return 'status-other'; if (status.includes('产')) return 'status-producing'; if (status.includes('闲')) return 'status-idle'; if (status.includes('停')) return 'status-stopped'; if (status.includes('修')) return 'status-maintenance'; return 'status-other'; };
-        const factoryMachines = computed(() => { return machineList.value.map(m => { const logs = weavingLogList.value.filter(log => String(log.machineId) === String(m.machineId)); logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate)); const latest = logs[0] || {}; return { ...m, currentTape: latest.tapePartNumber || '无任务', currentCapacity: latest.capacityPerDay || 0, operator: latest.operatorName || m.operatorName || '未知', statusClass: getStatusClass(m.machineStatus) }; }); });
-        const allWeavingMachines = computed(() => { return factoryMachines.value.sort((a, b) => parseInt(a.machineId) - parseInt(b.machineId)); });
-        const factoryLines = computed(() => { return lineList.value.map(l => { const logs = coexLogList.value.filter(log => String(log.lineId) === String(l.lineId)); logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate)); const latest = logs[0] || {}; return { ...l, currentFinished: latest.finishedPartNumber || '无任务', currentSpeed: latest.productionSpeed || 0, currentCapacity: latest.capacityPerDay || 0, statusClass: getStatusClass(l.lineStatus) }; }).sort((a, b) => parseInt(a.lineId) - parseInt(b.lineId)); });
-
-        watch(activeMenu, (newVal) => {
-            if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); }
-            if (newVal === 'inventory') loadInventory(); if (newVal === 'weaving') loadWeavingLogs();
-            if (newVal === 'coex') loadCoexLogs(); if (newVal === 'order') loadOrders(); if (newVal === 'process') loadProcesses();
-        });
         // ==========================================
-// 📈 实时订单执行仪表看板测算引擎 (分界测算核心)
-// ==========================================
+        // 📊 核心数据抓取：关联订单与工艺推演
+        // ==========================================
+        const cleanId = (id) => String(id).replace(/[#线]/g, '').trim();
+        const getStatusClass = (status) => { if (!status) return 'status-other'; if (status.includes('产')) return 'status-producing'; if (status.includes('闲')) return 'status-idle'; if (status.includes('停')) return 'status-stopped'; if (status.includes('修')) return 'status-maintenance'; return 'status-other'; };
+
+        const computedMachineStatus = (machineId, logList, idKey) => {
+            const logs = logList.filter(log => cleanId(log[idKey]) === cleanId(machineId));
+            if (logs.length === 0) return '空闲';
+
+            logs.sort((a, b) => new Date(b.entryDate).getTime() - new Date(a.entryDate).getTime());
+
+            let globalMaxTime = 0;
+            logList.forEach(l => {
+                const t = new Date(l.entryDate + 'T00:00:00').getTime();
+                if (t > globalMaxTime) globalMaxTime = t;
+            });
+
+            const latestLog = logs[0];
+            const latestLogTime = new Date(latestLog.entryDate + 'T00:00:00').getTime();
+            const ONE_DAY = 24 * 3600 * 1000;
+
+            const hasRecentData = (globalMaxTime - latestLogTime) <= ONE_DAY;
+
+            const r = latestLog.remarks || '';
+            if (r.includes('了机')) return '空闲';
+            if (r.includes('开头机')) return '在产';
+
+            return hasRecentData ? '在产' : '空闲';
+        };
+
+        // 🌟 性能优化：缓存所有机台状态，避免 O(N^2) 重复计算
+        const machineStatusMap = computed(() => {
+            const map = {};
+            machineList.value.forEach(m => { map[cleanId(m.machineId)] = computedMachineStatus(m.machineId, weavingLogList.value, 'machineId'); });
+            return map;
+        });
+        const lineStatusMap = computed(() => {
+            const map = {};
+            lineList.value.forEach(l => { map[cleanId(l.lineId)] = computedMachineStatus(l.lineId, coexLogList.value, 'lineId'); });
+            return map;
+        });
+
+        // 🌟 核心算法升级：通过带坯寻找最新订单，并将总任务量平均分配给所有在产该带坯的机台
+        const getWeavingOrderProgress = (tapePn, machineId) => {
+            if (!tapePn || tapePn === '未知') return { orderId: '无订单', finishedPn: '', total: 0, accum: 0 };
+
+            const matchedFinishedPns = processList.value.filter(p => p.tapePartNumber === tapePn).map(p => p.finishedPartNumber);
+
+            let currentOrder = null;
+            let currentOrderItem = null;
+            let latestOrderDate = -1;
+
+            orderList.value.forEach(o => {
+                if (!o.items) return;
+                o.items.forEach(it => {
+                    if (matchedFinishedPns.includes(it.finishedPartNumber)) {
+                        const t = new Date(o.orderDate || 0).getTime();
+                        if (t > latestOrderDate) {
+                            latestOrderDate = t;
+                            currentOrder = o;
+                            currentOrderItem = it;
+                        }
+                    }
+                });
+            });
+
+            let accum = 0;
+            let total = 0;
+            let orderId = '无订单';
+            let finishedPn = '';
+
+            // 动态探测当前有几台织造机正在“并发”做这个带坯
+            let activeCount = 0;
+            machineList.value.forEach(m => {
+                if (machineStatusMap.value[cleanId(m.machineId)] === '在产') {
+                    const logs = weavingLogList.value.filter(log => cleanId(log.machineId) === cleanId(m.machineId));
+                    logs.sort((a, b) => new Date(b.entryDate).getTime() - new Date(a.entryDate).getTime());
+                    if (logs[0] && logs[0].tapePartNumber === tapePn) activeCount++;
+                }
+            });
+            if (activeCount === 0) activeCount = 1;
+
+            if (currentOrder) {
+                orderId = currentOrder.orderId;
+                finishedPn = currentOrderItem.finishedPartNumber;
+                let rawTotal = currentOrderItem.totalLength > 0 ? currentOrderItem.totalLength : (currentOrderItem.metersPerRoll * currentOrderItem.rollCount);
+                if (!rawTotal) rawTotal = 1000;
+                // 🌟 将该订单的目标需求量，平均分配给并发生产的所有机台
+                total = rawTotal / activeCount;
+
+                // 🌟 截断历史数据：只累加当前特定机台自己，在该订单下达日期之后的产量
+                const orderTime = new Date(currentOrder.orderDate + 'T00:00:00').getTime();
+                accum = weavingLogList.value
+                    .filter(l => cleanId(l.machineId) === cleanId(machineId) && l.tapePartNumber === tapePn && new Date(l.entryDate + 'T00:00:00').getTime() >= orderTime)
+                    .reduce((sum, l) => sum + (l.capacityPerDay || 0), 0);
+            } else {
+                const taskLogs = weavingLogList.value.filter(l => cleanId(l.machineId) === cleanId(machineId) && l.tapePartNumber === tapePn);
+                accum = taskLogs.reduce((sum, l) => sum + (l.capacityPerDay || 0), 0);
+                total = accum > 0 ? accum * 1.5 : 1000;
+            }
+
+            return { orderId, finishedPn, total, accum };
+        };
+
+        // 🌟 同理：共挤线多线并产均分任务量
+        const getCoexOrderProgress = (orderId, finishedPn, lineId) => {
+            let total = 0;
+            let accum = 0;
+
+            // 动态探测并发产线条数
+            let activeCount = 0;
+            lineList.value.forEach(l => {
+                if (lineStatusMap.value[cleanId(l.lineId)] === '在产') {
+                    const logs = coexLogList.value.filter(log => cleanId(log.lineId) === cleanId(l.lineId));
+                    logs.sort((a, b) => new Date(b.entryDate).getTime() - new Date(a.entryDate).getTime());
+                    if (logs[0] && logs[0].orderNumber === orderId && logs[0].finishedPartNumber === finishedPn) activeCount++;
+                }
+            });
+            if (activeCount === 0) activeCount = 1;
+
+            orderList.value.forEach(o => {
+                if (o.orderId === orderId) {
+                    const it = o.items.find(i => i.finishedPartNumber === finishedPn);
+                    if (it) {
+                        let rawTotal = it.totalLength > 0 ? it.totalLength : (it.metersPerRoll * it.rollCount);
+                        total = rawTotal / activeCount; // 🌟 均分目标需求量
+                    }
+                }
+            });
+
+            // 🌟 只统计特定产线自己的产量
+            const taskLogs = coexLogList.value.filter(log => cleanId(log.lineId) === cleanId(lineId) && log.orderNumber === orderId && log.finishedPartNumber === finishedPn);
+            accum = taskLogs.reduce((sum, log) => sum + (log.capacityPerDay || 0), 0);
+
+            if (!total) total = accum > 0 ? accum * 1.5 : 1000;
+            return { total, accum };
+        };
+
+        // ==========================================
+        // 📊 核心仪表盘：织造 & 共挤产线卡片
+        // ==========================================
+        const factoryMachines = computed(() => {
+            return machineList.value.map(m => {
+                const logs = weavingLogList.value.filter(log => cleanId(log.machineId) === cleanId(m.machineId));
+                logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+                const latest = logs[0] || {};
+
+                const realStatus = machineStatusMap.value[cleanId(m.machineId)];
+                const currentTape = realStatus === '在产' ? (latest.tapePartNumber || '无任务') : '无任务';
+
+                let orderId = '无订单';
+                let accum = 0; let total = 0;
+
+                if (currentTape !== '无任务') {
+                    const progress = getWeavingOrderProgress(currentTape, m.machineId);
+                    orderId = progress.orderId;
+                    accum = progress.accum;
+                    total = progress.total;
+                }
+
+                return {
+                    ...m,
+                    machineStatus: realStatus,
+                    currentTape: currentTape,
+                    currentOrder: orderId,
+                    accum: accum,
+                    total: total,
+                    operator: realStatus === '在产' ? (latest.operatorName || m.operatorName || '未知') : '未知',
+                    statusClass: getStatusClass(realStatus)
+                };
+            });
+        });
+
+        const allWeavingMachines = computed(() => {
+            return factoryMachines.value.sort((a, b) => parseInt(cleanId(a.machineId)) - parseInt(cleanId(b.machineId)));
+        });
+
+        const factoryLines = computed(() => {
+            return lineList.value.map(l => {
+                const logs = coexLogList.value.filter(log => cleanId(log.lineId) === cleanId(l.lineId));
+                logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+                const latest = logs[0] || {};
+
+                const realStatus = lineStatusMap.value[cleanId(l.lineId)];
+                let orderId = '无任务';
+                let finishedPn = '无任务';
+                let accum = 0; let total = 0;
+
+                if (realStatus === '在产' && latest.orderNumber && latest.finishedPartNumber) {
+                    orderId = latest.orderNumber;
+                    finishedPn = latest.finishedPartNumber;
+                    const progress = getCoexOrderProgress(orderId, finishedPn, l.lineId);
+                    accum = progress.accum;
+                    total = progress.total;
+                }
+
+                return {
+                    ...l,
+                    lineStatus: realStatus,
+                    currentOrder: orderId,
+                    currentFinished: finishedPn,
+                    accum: accum,
+                    total: total,
+                    currentSpeed: realStatus === '在产' ? (latest.productionSpeed || 0) : 0,
+                    statusClass: getStatusClass(realStatus)
+                };
+            }).sort((a, b) => parseInt(cleanId(a.lineId)) - parseInt(cleanId(b.lineId)));
+        });
+
+        // ==========================================
+        // 📈 实时订单执行仪表看板测算引擎 (订单甘特图)
+        // ==========================================
+        const dashboardViewDays = ref('auto');
+
         const dashboardRows = computed(() => {
             const now = executionCurrentTime.value;
             const rows = [];
 
-            // 遍历织造机台
             machineList.value.forEach(m => {
-                const logs = weavingLogList.value.filter(log => String(log.machineId) === String(m.machineId));
+                const logs = weavingLogList.value.filter(log => cleanId(log.machineId) === cleanId(m.machineId));
                 logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
                 const latest = logs[0];
 
-                if (latest && m.machineStatus && m.machineStatus.includes('产')) {
+                const realStatus = machineStatusMap.value[cleanId(m.machineId)];
+
+                if (latest && realStatus === '在产') {
                     const tapePn = latest.tapePartNumber || '未知';
-                    const taskLogs = weavingLogList.value.filter(l => l.tapePartNumber === tapePn);
-                    const accum = taskLogs.reduce((sum, l) => sum + (l.capacityPerDay || 0), 0); // 真实累计米数
-                    const total = latest.totalDemand > 0 ? latest.totalDemand : accum * 1.5; // 如果没有总值打底
+                    const progress = getWeavingOrderProgress(tapePn, m.machineId);
 
                     const capPerDay = latest.capacityPerDay > 0 ? latest.capacityPerDay : 1500;
-                    const pastMs = (accum / capPerDay) * 24 * 3600 * 1000;
-                    const remaining = Math.max(0, total - accum);
-                    const futureMs = (remaining / capPerDay) * 24 * 3600 * 1000; // 预估剩余天数
+                    const pastMs = (progress.accum / capPerDay) * 24 * 3600 * 1000;
+                    const remaining = Math.max(0, progress.total - progress.accum);
+                    const futureMs = (remaining / capPerDay) * 24 * 3600 * 1000;
 
                     rows.push({
                         id: 'W_' + m.machineId, label: `织造 ${m.machineId}#`, type: 'weaving',
-                        task: { partNumber: tapePn, orderId: '织造批次', accum, total, start: now - pastMs, end: now + futureMs, capPerDay }
+                        task: {
+                            partNumber: tapePn,
+                            orderId: progress.orderId,
+                            linkedFinished: progress.finishedPn,
+                            accum: progress.accum,
+                            total: progress.total,
+                            start: now - pastMs,
+                            end: now + futureMs,
+                            capPerDay
+                        }
                     });
                 } else {
                     rows.push({ id: 'W_' + m.machineId, label: `织造 ${m.machineId}#`, type: 'weaving', task: null });
                 }
             });
 
-            // 遍历共挤产线
             lineList.value.forEach(l => {
-                const logs = coexLogList.value.filter(log => String(log.lineId) === String(l.lineId));
+                const logs = coexLogList.value.filter(log => cleanId(log.lineId) === cleanId(l.lineId));
                 logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
                 const latest = logs[0];
 
-                if (latest && l.lineStatus && l.lineStatus.includes('产')) {
+                const realStatus = lineStatusMap.value[cleanId(l.lineId)];
+
+                if (latest && realStatus === '在产') {
                     const finishedPn = latest.finishedPartNumber || '未知';
                     const orderId = latest.orderNumber || '未知';
-
-                    const taskLogs = coexLogList.value.filter(log => log.orderNumber === orderId && log.finishedPartNumber === finishedPn);
-                    const accum = taskLogs.reduce((sum, log) => sum + (log.capacityPerDay || 0), 0); // 真实累计
-
-                    let total = 0;
-                    orderList.value.forEach(o => {
-                        if (o.orderId === orderId) {
-                            const it = o.items.find(i => i.finishedPartNumber === finishedPn);
-                            if (it) total = it.metersPerRoll * it.rollCount; // 取得真实订单要求的总米数
-                        }
-                    });
-                    if (total === 0) total = accum * 1.5;
+                    const progress = getCoexOrderProgress(orderId, finishedPn, l.lineId);
 
                     const capPerDay = latest.capacityPerDay > 0 ? latest.capacityPerDay : 2000;
-                    const pastMs = (accum / capPerDay) * 24 * 3600 * 1000;
-                    const remaining = Math.max(0, total - accum);
+                    const pastMs = (progress.accum / capPerDay) * 24 * 3600 * 1000;
+                    const remaining = Math.max(0, progress.total - progress.accum);
                     const futureMs = (remaining / capPerDay) * 24 * 3600 * 1000;
 
                     rows.push({
                         id: 'C_' + l.lineId, label: `共挤 ${l.lineId}#`, type: 'coex',
-                        task: { partNumber: finishedPn, orderId, accum, total, start: now - pastMs, end: now + futureMs, capPerDay }
+                        task: { partNumber: finishedPn, orderId, accum: progress.accum, total: progress.total, start: now - pastMs, end: now + futureMs, capPerDay }
                     });
                 } else {
                     rows.push({ id: 'C_' + l.lineId, label: `共挤 ${l.lineId}#`, type: 'coex', task: null });
@@ -514,19 +755,24 @@ const app = createApp({
             return rows;
         });
 
-// 计算大盘可视域的时钟范围 (自动兜底前后3天)
         const dashboardBounds = computed(() => {
-            let minTime = executionCurrentTime.value - (3 * 24 * 3600 * 1000);
-            let maxTime = executionCurrentTime.value + (3 * 24 * 3600 * 1000);
-            dashboardRows.value.forEach(r => {
-                if (r.task) {
-                    if (r.task.start < minTime) minTime = r.task.start;
-                    if (r.task.end > maxTime) maxTime = r.task.end;
-                }
-            });
-            const span = maxTime - minTime;
-            minTime -= span * 0.05; maxTime += span * 0.05; // 边缘留白
-            return { minTime, maxTime, span: maxTime - minTime };
+            if (dashboardViewDays.value === 'auto') {
+                let minTime = executionCurrentTime.value - (3 * 24 * 3600 * 1000);
+                let maxTime = executionCurrentTime.value + (3 * 24 * 3600 * 1000);
+                dashboardRows.value.forEach(r => {
+                    if (r.task) {
+                        if (r.task.start < minTime) minTime = r.task.start;
+                        if (r.task.end > maxTime) maxTime = r.task.end;
+                    }
+                });
+                const span = maxTime - minTime;
+                minTime -= span * 0.05; maxTime += span * 0.05;
+                return { minTime, maxTime, span: maxTime - minTime };
+            } else {
+                let minTime = executionCurrentTime.value - (dashboardViewDays.value * 24 * 3600 * 1000);
+                let maxTime = executionCurrentTime.value + (dashboardViewDays.value * 24 * 3600 * 1000);
+                return { minTime, maxTime, span: maxTime - minTime };
+            }
         });
 
         const dashboardTimeline = computed(() => {
@@ -547,22 +793,38 @@ const app = createApp({
         });
 
         const dashboardRowsWithPos = computed(() => {
-            const { minTime, span } = dashboardBounds.value;
+            const { minTime, maxTime, span } = dashboardBounds.value;
             return dashboardRows.value.map(r => {
                 if (r.task) {
-                    const s = Math.max(minTime, r.task.start);
-                    const e = Math.min(minTime + span, r.task.end);
-                    r.task.left = ((s - minTime) / span * 100) + '%';
-                    r.task.width = ((e - s) / span * 100) + '%';
+                    if (r.task.start >= maxTime || r.task.end <= minTime) {
+                        r.task.outOfBounds = true;
+                    } else {
+                        r.task.outOfBounds = false;
+                        const s = Math.max(minTime, r.task.start);
+                        const e = Math.min(maxTime, r.task.end);
+                        r.task.left = ((s - minTime) / span * 100) + '%';
+                        r.task.width = ((e - s) / span * 100) + '%';
 
-                    // 实时切分界线颜色比例：左绿右蓝
-                    const current = executionCurrentTime.value;
-                    if (current > r.task.end) r.task.pastPct = '100%';
-                    else if (current < r.task.start) r.task.pastPct = '0%';
-                    else r.task.pastPct = ((current - r.task.start) / (r.task.end - r.task.start) * 100) + '%';
+                        const current = executionCurrentTime.value;
+                        if (current >= r.task.end) r.task.pastPct = '100%';
+                        else if (current <= r.task.start) r.task.pastPct = '0%';
+                        else {
+                            let p = (current - s) / (e - s) * 100;
+                            if (p > 100) p = 100;
+                            if (p < 0) p = 0;
+                            r.task.pastPct = p + '%';
+                        }
+                    }
                 }
                 return r;
             });
+        });
+
+        watch(activeMenu, (newVal) => {
+            if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); }
+            if (newVal === 'inventory') loadInventory(); if (newVal === 'weaving') loadWeavingLogs();
+            if (newVal === 'coex') loadCoexLogs(); if (newVal === 'order') loadOrders(); if (newVal === 'process') loadProcesses();
+            if (newVal === 'execution') { loadWeavingLogs(); loadCoexLogs(); loadOrders(); }
         });
 
         return {
@@ -574,7 +836,8 @@ const app = createApp({
             estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity,
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processSearch, processPage, paginatedProcessList, processTotal,
             allWeavingMachines, factoryLines,
-            executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos,
+            executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos, dashboardViewDays,
+            orderFileRef, exportOrderExcel, handleOrderImport
         };
     }
 });

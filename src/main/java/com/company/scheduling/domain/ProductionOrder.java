@@ -1,4 +1,5 @@
 package com.company.scheduling.domain;
+
 import jakarta.persistence.*;
 import lombok.Data;
 import java.math.BigDecimal;
@@ -8,18 +9,31 @@ import java.time.LocalDateTime;
 @Data @Entity @Table(name = "production_orders")
 public class ProductionOrder {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Integer id; // 🌟 修复：使用自增 ID 作为主键，支持一单多品
+    private Integer id;
 
-    private String orderId;
-    private LocalDate deliveryDate;
-    private LocalDate orderDate;
-    private String placerName;
-    private String finishedPartNumber;
-    private String modelSpec;
-    private String material;
-    private BigDecimal metersPerRoll;
-    private Integer rollCount;
-    private String remarks;
+    private String orderId;              // 订单号
+    private String customerName;         // 客户名称
+    private String salesperson;          // 销售员
+
+    private LocalDate orderDate;         // 订单下达时间
+    private LocalDate deliveryDate;      // 交货期
+
+    private String finishedPartNumber;   // 零件号
+    private String productName;          // 品名
+    private String modelSpec;            // 规格型号
+    private String color;                // 胶色
+
+    @Column(precision = 10, scale = 2)
+    private BigDecimal unfinishedMeters; // 🌟 新增：未入库完成米数
+
+    @Column(precision = 10, scale = 2)
+    private BigDecimal metersPerRoll;    // 单卷长度
+    private Integer rollCount;           // 卷数
+
+    @Column(precision = 10, scale = 2)
+    private BigDecimal totalLength;      // 总数量(米)
+
+    private String remarks;              // 备注
     private String enteredBy;
     private LocalDateTime createdAt = LocalDateTime.now();
 }
