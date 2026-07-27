@@ -8,10 +8,9 @@ import java.util.List;
 @Repository
 public interface ProductionOrderRepo extends JpaRepository<ProductionOrder, Integer> {
     List<ProductionOrder> findByOrderId(String orderId);
-
-    // 🌟 新增：获取所有订单并按录入时间倒序（用于历史大盘）
     List<ProductionOrder> findAllByOrderByCreatedAtDesc();
-
-    // 🌟 新增：按订单号删除整个订单的所有明细
     void deleteByOrderId(String orderId);
+
+    // 🌟 新增：联合校验去重接口
+    boolean existsByOrderIdAndFinishedPartNumber(String orderId, String finishedPartNumber);
 }

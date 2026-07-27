@@ -13,7 +13,9 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class OrderService {
@@ -100,10 +102,12 @@ public class OrderService {
         if (file == null || file.isEmpty()) throw new RuntimeException("上传的订单 Excel 为空！");
         int successCount = 0; int skipCount = 0;
 
+        Set<String> seenKeys = new HashSet<>(); // 🌟 文件内部去重缓存池
+
         try (InputStream is = file.getInputStream(); Workbook workbook = WorkbookFactory.create(is)) {
             Sheet sheet = workbook.getSheetAt(0);
 
-            // 🌟 核心：动态探测表头列索引 (无论什么格式的表格，只要列名包含关键字即可被捕获)
+            // 🌟 动态探测表头列索引
             Row headerRow = sheet.getRow(0);
             int colOrderId = -1, colCustomer = -1, colSales = -1, colUnfinished = -1;
             int colPartNum = -1, colProductName = -1, colModelSpec = -1, colColor = -1;
@@ -137,6 +141,12 @@ public class OrderService {
                 String finishedPartNumber = colPartNum >= 0 ? getCellValueAsString(row.getCell(colPartNum)) : "";
                 if (orderId.isEmpty() || finishedPartNumber.isEmpty()) { skipCount++; continue; }
 
+                // 🌟 联合防重：订单号 + 零件号 (剔除本表内重复和数据库历史重复)
+                String uniqueKey = orderId + "_" + finishedPartNumber;
+                if (seenKeys.contains(uniqueKey)) { skipCount++; continue; }
+                if (orderRepo.existsByOrderIdAndFinishedPartNumber(orderId, finishedPartNumber)) { skipCount++; continue; }
+                seenKeys.add(uniqueKey);
+
                 ProductionOrder order = new ProductionOrder();
                 order.setOrderId(orderId);
                 order.setFinishedPartNumber(finishedPartNumber);
@@ -165,7 +175,7 @@ public class OrderService {
                 successCount++;
             }
         }
-        return "🛒 销售订单 Excel 解析完毕！导入 " + successCount + " 条明细，跳过无效行 " + skipCount + " 条。";
+        return "🛒 销售订单 Excel 解析完毕！导入 " + successCount + " 条明细，自动剔除重复或无效行 " + skipCount + " 条。";
     }
 
     public byte[] exportOrdersToExcel() throws Exception {
@@ -174,7 +184,6 @@ public class OrderService {
             Sheet sheet = workbook.createSheet("销售订单明细");
             Row headerRow = sheet.createRow(0);
 
-            // 🌟 导出模板替换为不含废弃列的干净格式
             String[] headers = {"客户名称", "订单号", "销售员", "未入库完成米数", "零件号", "品名", "规格型号", "胶色", "单卷长度", "卷数", "总数量(米)", "订单下达时间", "交货期", "备注"};
 
             CellStyle headerStyle = workbook.createCellStyle();

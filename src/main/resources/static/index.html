@@ -71,6 +71,7 @@
                     <el-menu-item-group title="大盘与仪表">
                         <el-menu-item index="dashboard"><span>🗺️ 厂区双车间全景监控</span></el-menu-item>
                         <el-menu-item index="execution"><span>📈 订单执行实时看板</span></el-menu-item>
+                        <el-menu-item index="order-dashboard"><span>📅 订单交期全景大盘</span></el-menu-item>
                     </el-menu-item-group>
                     <el-menu-item-group title="MES 执行控制">
                         <el-menu-item index="weaving"><span>🧶 织造车间快速录入</span></el-menu-item>
@@ -696,6 +697,89 @@
                 </div>
                 <div v-show="activeMenu === 'estimation'">
                     <el-alert title="模块加载正常" type="success" :closable="false" />
+                </div>
+                <div v-show="activeMenu === 'order-dashboard'">
+                    <el-card shadow="hover">
+                        <template #header>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <b style="font-size: 16px; color: #8b5cf6;">📅 全盘订单交期与进度跟踪大盘 (按订单维度)</b>
+                                <div style="display: flex; gap: 15px; align-items: center;">
+                                    <span style="font-size: 13px; color: #64748b; font-weight: bold;">时序缩放:</span>
+                                    <el-radio-group v-model="orderViewDays" size="small">
+                                        <el-radio-button label="auto">全局自适应</el-radio-button>
+                                        <el-radio-button :label="15">±15天</el-radio-button>
+                                        <el-radio-button :label="30">±30天</el-radio-button>
+                                        <el-radio-button :label="60">±60天</el-radio-button>
+                                        <el-radio-button :label="90">±90天</el-radio-button>
+                                    </el-radio-group>
+                                    <el-button size="small" type="primary" plain @click="refreshCurrentPage">手动同步订单流</el-button>
+                                </div>
+                            </div>
+                        </template>
+
+                        <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; position: relative; min-height: 500px;">
+                            <!-- 动态日期坐标轴 -->
+                            <div style="display: flex; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 8px;">
+                                <div style="width: 170px; flex-shrink: 0; font-weight: bold; color: #64748b;">客户与订单号</div>
+                                <div style="flex-grow: 1; position: relative; height: 25px;">
+                                    <div v-for="m in orderGanttTimeline" :key="m.left" :style="{ left: m.left }"
+                                         style="position: absolute; top: 0; font-size: 11px; font-weight: bold; color: #94a3b8; transform: translateX(-50%); border-left: 1px dashed #cbd5e1; padding-left: 5px; height: 100%;">
+                                        {{ m.label }}
+                                    </div>
+                                    <div :style="{ left: orderGanttCurrentLineX }" style="position: absolute; top: 0; bottom: -2000px; width: 2px; background: rgba(239, 68, 68, 0.6); z-index: 10; pointer-events: none;">
+                                        <span style="position: absolute; top: -15px; left: -25px; font-size: 10px; color: #ef4444; font-weight: bold; background: white; padding: 0 4px; border-radius: 4px; border: 1px solid #ef4444;">最新快照日</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 订单任务轨道渲染 -->
+                            <div v-for="row in orderGanttRowsWithPos" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 46px;">
+                                <div style="width: 170px; flex-shrink: 0; font-weight: bold; font-size: 12px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    <span style="color: #8b5cf6;">{{ row.label }}</span><br/>
+                                    <span style="font-size: 10px; color: #94a3b8;">{{ row.customer }}</span>
+                                    <el-tag v-if="row.task.outOfBounds" size="small" type="warning" style="margin-left: 5px;">界外</el-tag>
+                                </div>
+
+                                <div style="flex-grow: 1; position: relative; height: 100%; background: #f8fafc;">
+                                    <div v-if="!row.task.outOfBounds" :style="{ left: row.task.left, width: row.task.width }"
+                                         style="position: absolute; height: 26px; top: 10px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15); overflow: hidden; background: #e2e8f0;">
+
+                                        <!-- 紫色实心代表已完成比例，浅紫代表待完成 -->
+                                        <div :style="{ width: row.task.pastPct }" style="position: absolute; left: 0; top: 0; height: 100%; background: #8b5cf6; z-index: 1;"></div>
+                                        <div :style="{ left: row.task.pastPct, right: 0 }" style="position: absolute; top: 0; height: 100%; background: #c4b5fd; opacity: 0.6; z-index: 1;"></div>
+
+                                        <!-- 详细信息悬浮窗 -->
+                                        <el-tooltip placement="top" effect="dark">
+                                            <template #content>
+                                                <div style="font-size: 13px; line-height: 1.6; max-width: 350px;">
+                                                    <b>【订单档案：{{ row.label }}】</b><br/>
+                                                    客户主体：<span style="color:#fde047;">{{ row.customer }}</span> &nbsp; 业务员：{{ row.sales }}<br/>
+                                                    排期跨度：{{ new Date(row.task.start).toLocaleDateString() }} 至 <span style="color:#fde047;">{{ new Date(row.task.end).toLocaleDateString() }}</span><br/>
+                                                    <hr style="border: 0; border-top: 1px dashed #64748b; margin: 5px 0;">
+                                                    <b>综合执行进度：{{ row.task.progress.toFixed(1) }}%</b> <br/>
+                                                    (已入库 {{ row.task.finished.toFixed(1) }} 米 / 总量 {{ row.task.total.toFixed(1) }} 米)<br/>
+                                                    <hr style="border: 0; border-top: 1px dashed #64748b; margin: 5px 0;">
+                                                    <b>包含的管带产品清单：</b>
+                                                    <div v-for="it in row.task.items" :key="it.finishedPartNumber" style="font-size: 11px; color:#cbd5e1; margin-top:3px;">
+                                                        • {{ it.finishedPartNumber }} ({{ it.modelSpec }}): <br/>
+                                                        &nbsp;&nbsp; 产出 {{ ((it.totalLength || (it.metersPerRoll*it.rollCount) || 0) - (it.unfinishedMeters != null ? it.unfinishedMeters : (it.totalLength || (it.metersPerRoll*it.rollCount) || 0))).toFixed(0) }} / {{ (it.totalLength || (it.metersPerRoll*it.rollCount) || 0).toFixed(0) }} m
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <span style="position: relative; z-index: 2; padding: 0 5px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">
+                                                {{ row.task.progress.toFixed(1) }}%
+                                            </span>
+                                        </el-tooltip>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 15px; display: flex; gap: 15px; font-size: 12px; color: #64748b;">
+                            <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #8b5cf6; border-radius: 2px;"></div> 订单所有管带综合已完成比例</div>
+                            <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #c4b5fd; opacity: 0.6; border-radius: 2px;"></div> 订单总欠数 (图形右侧硬性边界为合同约定交货期)</div>
+                        </div>
+                    </el-card>
                 </div>
 
             </div>

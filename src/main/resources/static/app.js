@@ -92,6 +92,7 @@ const app = createApp({
             else if (activeMenu.value === 'coex') { loadCoexLogs(); ElMessage.success('🔄 共挤历史台账同步刷新完成'); }
             else if (activeMenu.value === 'inventory') { loadInventory(); ElMessage.success('🔄 虚拟分批库存大盘已刷新'); }
             else if (activeMenu.value === 'order') { loadOrders(); ElMessage.success('🔄 销售合同档案订单库已刷新'); }
+            else if (activeMenu.value === 'order-dashboard') { loadOrders(); ElMessage.success('🔄 订单交期全景大盘已更新'); }
             else if (activeMenu.value === 'execution') {
                 loadWeavingLogs(); loadCoexLogs(); loadOrders();
                 ElMessage.success('🔄 全厂订单执行仪表板实时数据获取成功！');
@@ -820,12 +821,117 @@ const app = createApp({
             });
         });
 
+        // ==========================================
+        // 📅 订单交期全景甘特图大盘引擎
+        // ==========================================
+        const orderViewDays = ref('auto'); // 订单甘特图的缩放级别
+
+        // 组装订单横排数据
+        const orderGanttRows = computed(() => {
+            const rows = [];
+            orderList.value.forEach(o => {
+                // 如果没有日期数据则跳过渲染
+                if (!o.orderDate || !o.deliveryDate) return;
+
+                const start = new Date(o.orderDate + 'T00:00:00').getTime();
+                const end = new Date(o.deliveryDate + 'T23:59:59').getTime();
+
+                let total = 0;
+                let unfinished = 0;
+
+                // 汇总该订单下所有零件的数量和未完米数
+                if (o.items && o.items.length > 0) {
+                    o.items.forEach(it => {
+                        const len = it.totalLength || (it.metersPerRoll * it.rollCount) || 0;
+                        total += len;
+                        unfinished += it.unfinishedMeters != null ? it.unfinishedMeters : len;
+                    });
+                }
+
+                const finished = Math.max(0, total - unfinished);
+                const progress = total > 0 ? (finished / total * 100) : 0;
+
+                rows.push({
+                    id: o.orderId,
+                    label: o.orderId,
+                    customer: o.customerName || '未知',
+                    sales: o.salesperson || '未知',
+                    task: {
+                        start, end, total, finished, unfinished, progress,
+                        items: o.items || []
+                    }
+                });
+            });
+            // 默认按交货期从早到晚排序
+            return rows.sort((a, b) => a.task.end - b.task.end);
+        });
+
+        // 计算订单时间轴的边界
+        const orderGanttBounds = computed(() => {
+            const now = executionCurrentTime.value;
+            if (orderViewDays.value === 'auto') {
+                let minTime = now - (15 * 24 * 3600 * 1000);
+                let maxTime = now + (45 * 24 * 3600 * 1000);
+                if (orderGanttRows.value.length > 0) {
+                    minTime = Math.min(...orderGanttRows.value.map(r => r.task.start));
+                    maxTime = Math.max(...orderGanttRows.value.map(r => r.task.end));
+                }
+                const span = maxTime - minTime || (30 * 24 * 3600 * 1000);
+                minTime -= span * 0.05; maxTime += span * 0.05;
+                return { minTime, maxTime, span: maxTime - minTime };
+            } else {
+                let minTime = now - (orderViewDays.value * 24 * 3600 * 1000);
+                let maxTime = now + (orderViewDays.value * 24 * 3600 * 1000);
+                return { minTime, maxTime, span: maxTime - minTime };
+            }
+        });
+
+        // 渲染订单顶部日期刻度
+        const orderGanttTimeline = computed(() => {
+            const { minTime, maxTime, span } = orderGanttBounds.value;
+            const markers = [];
+            const days = span / (1000 * 60 * 60 * 24);
+            let step = Math.ceil(days / 10);
+            for (let t = minTime; t <= maxTime; t += step * 24 * 3600 * 1000) {
+                const dateObj = new Date(t);
+                markers.push({ left: ((t - minTime) / span * 100) + '%', label: `${dateObj.getMonth() + 1}/${dateObj.getDate()}` });
+            }
+            return markers;
+        });
+
+        const orderGanttCurrentLineX = computed(() => {
+            const { minTime, span } = orderGanttBounds.value;
+            return ((executionCurrentTime.value - minTime) / span * 100) + '%';
+        });
+
+        // 智能裁剪界外订单任务
+        const orderGanttRowsWithPos = computed(() => {
+            const { minTime, maxTime, span } = orderGanttBounds.value;
+            return orderGanttRows.value.map(r => {
+                if (r.task.start >= maxTime || r.task.end <= minTime) {
+                    r.task.outOfBounds = true;
+                } else {
+                    r.task.outOfBounds = false;
+                    const s = Math.max(minTime, r.task.start);
+                    const e = Math.min(maxTime, r.task.end);
+                    r.task.left = ((s - minTime) / span * 100) + '%';
+                    r.task.width = ((e - s) / span * 100) + '%';
+                    r.task.pastPct = r.task.progress + '%'; // 填充背景色比例等于订单完成率
+                }
+                return r;
+            });
+        });
+
+        // 🌟 将新页面加入到路由刷新监听器中
         watch(activeMenu, (newVal) => {
             if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); }
             if (newVal === 'inventory') loadInventory(); if (newVal === 'weaving') loadWeavingLogs();
             if (newVal === 'coex') loadCoexLogs(); if (newVal === 'order') loadOrders(); if (newVal === 'process') loadProcesses();
             if (newVal === 'execution') { loadWeavingLogs(); loadCoexLogs(); loadOrders(); }
+            if (newVal === 'order-dashboard') { loadOrders(); }
         });
+
+
 
         return {
             isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect, refreshCurrentPage, machineList, lineList,
@@ -837,7 +943,7 @@ const app = createApp({
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processSearch, processPage, paginatedProcessList, processTotal,
             allWeavingMachines, factoryLines,
             executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos, dashboardViewDays,
-            orderFileRef, exportOrderExcel, handleOrderImport
+            orderFileRef, exportOrderExcel, handleOrderImport,orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX
         };
     }
 });
