@@ -69,19 +69,19 @@
             <div style="width: 240px; background: white; border-right: 1px solid #e2e8f0; overflow-y: auto;">
                 <el-menu :default-active="activeMenu" @select="handleMenuSelect">
                     <el-menu-item-group title="大盘与仪表">
-                        <el-menu-item index="dashboard"><span>🗺️ 厂区双车间全景监控</span></el-menu-item>
-                        <el-menu-item index="execution"><span>📈 订单执行实时看板</span></el-menu-item>
-                        <el-menu-item index="order-dashboard"><span>📅 订单交期全景大盘</span></el-menu-item>
+                        <el-menu-item index="order-dashboard"><span>📅 订单排产总览</span></el-menu-item>
+                        <el-menu-item index="dashboard"><span>🗺️ 厂区全景监控</span></el-menu-item>
+                        <el-menu-item index="execution"><span>📈 执行实时看板</span></el-menu-item>
                     </el-menu-item-group>
                     <el-menu-item-group title="MES 执行控制">
-                        <el-menu-item index="weaving"><span>🧶 织造车间快速录入</span></el-menu-item>
-                        <el-menu-item index="coex"><span>🗜️ 共挤车间快速录入</span></el-menu-item>
-                        <el-menu-item index="inventory"><span>📦 虚拟库存调控中心</span></el-menu-item>
+                        <el-menu-item index="weaving"><span>🧶 织造数据录入</span></el-menu-item>
+                        <el-menu-item index="coex"><span>🗜️ 共挤数据录入</span></el-menu-item>
+                        <el-menu-item index="inventory"><span>📦 库存调控中心</span></el-menu-item>
                     </el-menu-item-group>
                     <el-menu-item-group title="APS 智能计划">
-                        <el-menu-item index="order"><span>🛒 销售订单统一下达</span></el-menu-item>
-                        <el-menu-item index="process"><span>⚙️ 工艺路线参数配置</span></el-menu-item>
-                        <el-menu-item index="estimation"><span>📊 智能排产指挥大盘</span></el-menu-item>
+                        <el-menu-item index="order"><span>🛒 订单统一下达</span></el-menu-item>
+                        <el-menu-item index="process"><span>⚙️ 工艺路线配置</span></el-menu-item>
+                        <el-menu-item index="estimation"><span>📊 排产指挥大盘</span></el-menu-item>
                     </el-menu-item-group>
                 </el-menu>
             </div>
@@ -494,6 +494,25 @@
                             <el-table-column prop="salesperson" label="销售员"></el-table-column>
                             <el-table-column prop="orderDate" label="接单日期"></el-table-column>
                             <el-table-column prop="deliveryDate" label="合同约定交期"></el-table-column>
+                            <el-table-column label="排产状态" width="110" align="center">
+                                <template #default="scope">
+                                    <el-tag v-if="scope.row.scheduleStatus === '已排产'" type="success" size="small">已排产</el-tag>
+                                    <el-tag v-else type="info" size="small">未排产</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="排产计划" width="200">
+                                <template #default="scope">
+                                    <span v-if="scope.row.plannedStartDate" style="font-size: 12px;">
+                                        {{ new Date(scope.row.plannedStartDate).toLocaleDateString() }} ~ {{ new Date(scope.row.plannedEndDate).toLocaleDateString() }}
+                                    </span>
+                                    <span v-else style="color: #94a3b8; font-size: 12px;">-</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="查看排产" width="90" align="center">
+                                <template #default="scope">
+                                    <el-button v-if="scope.row.scheduleStatus === '已排产'" type="primary" size="small" plain @click="openOrderDetail(scope.row.orderId)">查看</el-button>
+                                </template>
+                            </el-table-column>
                             <el-table-column label="管理操作" width="140" align="center">
                                 <template #default="scope">
                                     <el-button type="primary" size="small" plain @click="editOrder(scope.row)">修</el-button>
@@ -522,11 +541,21 @@
                             <el-form-item label="织造提前结束(天)"><el-input-number v-model="estForm.weavingAdvanceDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
                             <el-form-item><el-button type="success" @click="fetchInitialDraft" :loading="loading" icon="Operation">开启逆向推演</el-button></el-form-item>
                         </el-form>
+                        <div style="margin: 15px 0; display: flex; align-items: center; gap: 15px;">
+                            <el-switch v-model="multiOrderMode" active-text="多订单排产模式" inactive-text="单订单模式"></el-switch>
+                            <div v-if="multiOrderMode" style="flex: 1;">
+                                <el-select v-model="selectedOrderIds" multiple filterable placeholder="选择多个订单进行并发排产..." style="width: 100%;">
+                                    <el-option v-for="o in orderList" :key="o.orderId" :label="`${o.orderId} - ${o.customerName || ''} (交期: ${o.deliveryDate || '未定'})`" :value="o.orderId"></el-option>
+                                </el-select>
+                                <el-button type="warning" style="margin-top: 10px;" @click="fetchMultiOrderSchedule" :loading="loading">多订单并发推演</el-button>
+                            </div>
+                        </div>
 
                         <div v-if="estResult">
                             <div style="display: flex; justify-content: space-between; margin-bottom: 15px;">
                                 <el-alert :title="`🎯 订单 ${estResult.orderId} 草稿就绪！推演时间跨度: ${estResult.overallStartDate.replace('T',' ')} 至 ${estResult.overallEndDate.replace('T',' ')}`" type="info" show-icon style="width: 75%;"></el-alert>
                                 <el-button type="danger" size="large" @click="commitFinalScheduleToDb">✅ 签发排产单并正式落库</el-button>
+                                <el-button type="warning" size="large" @click="applyManualAdjustments" :loading="loading" plain>🔄 应用人工调整并重新推演</el-button>
                             </div>
 
                             <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 25px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">
@@ -591,6 +620,16 @@
                                         </el-select>
                                     </template>
                                 </el-table-column>
+                                <el-table-column label="手动织造产能(m/天)" width="160">
+                                    <template #default="scope">
+                                        <el-input-number v-model="scope.row.manualWeavingCap" :min="0" size="small" placeholder="算法自动" style="width: 130px;" :controls="false"></el-input-number>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="手动共挤产能(m/天)" width="160">
+                                    <template #default="scope">
+                                        <el-input-number v-model="scope.row.manualCoexCap" :min="0" size="small" placeholder="算法自动" style="width: 130px;" :controls="false"></el-input-number>
+                                    </template>
+                                </el-table-column>
                                 <el-table-column label="工艺模型约束 (只读)" show-overflow-tooltip>
                                     <template #default="scope">
                                         经纬规格：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>
@@ -644,7 +683,7 @@
                                     </div>
                                 </div>
                             </div>
-                            <div v-for="row in dashboardRowsWithPos" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 42px;">
+                            <div v-for="row in dashboardRowsWithPlanOverlay" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 42px;">
                                 <div style="width: 150px; flex-shrink: 0; font-weight: bold; font-size: 12px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px; box-sizing: border-box;">
                                     {{ row.label }}
                                     <!-- 🌟 针对视窗外的数据，单独渲染 Tag 进行告知，避免留白引起误会 -->
@@ -676,28 +715,32 @@
                                             </span>
                                         </el-tooltip>
                                     </div>
+                                    <!-- 排产计划基线虚线框 -->
+                                    <div v-if="row.planInfo"
+                                         :style="{ left: row.planInfo.left, width: row.planInfo.width }"
+                                         style="position: absolute; height: 26px; top: 8px; border: 2px dashed #f59e0b; border-radius: 4px; z-index: 0; opacity: 0.7;">
+                                        <el-tooltip placement="bottom" effect="dark">
+                                            <template #content>
+                                                <div style="font-size: 12px;">
+                                                    <b>排产计划基线</b><br/>
+                                                    计划开始：{{ new Date(row.planInfo.plannedStart).toLocaleDateString() }}<br/>
+                                                    计划结束：{{ new Date(row.planInfo.plannedEnd).toLocaleDateString() }}
+                                                </div>
+                                            </template>
+                                            <span style="position: absolute; right: -10px; top: -8px; font-size: 10px; color: #f59e0b; font-weight: bold;">计划</span>
+                                        </el-tooltip>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                         <div style="margin-top: 15px; display: flex; gap: 15px; font-size: 12px; color: #64748b;">
                             <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #10b981; border-radius: 2px;"></div> 分界线前：基于您历史录入数据的【真实累计生产部分】</div>
                             <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #3b82f6; opacity: 0.6; border-radius: 2px;"></div> 分界线后：基于当前日产能预估计算的【未完成部分】及截机时间</div>
+                            <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; border: 2px dashed #f59e0b; border-radius: 2px;"></div> 排产计划基线（虚线框为计划时间范围）</div>
                         </div>
                     </el-card>
                 </div>
 
-                <div v-show="activeMenu === 'inventory'">
-                    <el-alert title="模块加载正常" type="success" :closable="false" />
-                </div>
-                <div v-show="activeMenu === 'process'">
-                    <el-alert title="模块加载正常" type="success" :closable="false" />
-                </div>
-                <div v-show="activeMenu === 'order'">
-                    <el-alert title="模块加载正常" type="success" :closable="false" />
-                </div>
-                <div v-show="activeMenu === 'estimation'">
-                    <el-alert title="模块加载正常" type="success" :closable="false" />
-                </div>
                 <div v-show="activeMenu === 'order-dashboard'">
                     <el-card shadow="hover">
                         <template #header>
@@ -741,32 +784,47 @@
                                 </div>
 
                                 <div style="flex-grow: 1; position: relative; height: 100%; background: #f8fafc;">
+                                    <!-- 底层：合同周期条（灰色），点击下钻详细排产 -->
                                     <div v-if="!row.task.outOfBounds" :style="{ left: row.task.left, width: row.task.width }"
-                                         style="position: absolute; height: 26px; top: 10px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15); overflow: hidden; background: #e2e8f0;">
+                                         style="position: absolute; height: 34px; top: 6px; border-radius: 4px; background: #e2e8f0; overflow: hidden; cursor: pointer;"
+                                         @click="openOrderDetail(row.id)">
 
-                                        <!-- 紫色实心代表已完成比例，浅紫代表待完成 -->
+                                        <!-- 已完成比例（紫色） -->
                                         <div :style="{ width: row.task.pastPct }" style="position: absolute; left: 0; top: 0; height: 100%; background: #8b5cf6; z-index: 1;"></div>
                                         <div :style="{ left: row.task.pastPct, right: 0 }" style="position: absolute; top: 0; height: 100%; background: #c4b5fd; opacity: 0.6; z-index: 1;"></div>
+
+                                        <!-- 上层：排产计划条（蓝色渐变，仅当有排产数据时显示） -->
+                                        <div v-if="row.task.hasPlannedSchedule"
+                                             :style="{ left: row.task.plannedLeft, width: row.task.plannedWidth }"
+                                             style="position: absolute; top: 2px; height: 30px; border-radius: 3px; background: linear-gradient(135deg, #3b82f6, #2563eb); z-index: 2; display: flex; align-items: center; justify-content: center; color: white; font-size: 10px; font-weight: bold; overflow: hidden; border: 1px solid rgba(255,255,255,0.3);">
+                                            <span style="text-shadow: 1px 1px 2px rgba(0,0,0,0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 3px;">
+                                                {{ new Date(row.task.plannedStart).toLocaleDateString('zh-CN', {month:'short', day:'numeric'}) }} → {{ new Date(row.task.plannedEnd).toLocaleDateString('zh-CN', {month:'short', day:'numeric'}) }}
+                                            </span>
+                                        </div>
 
                                         <!-- 详细信息悬浮窗 -->
                                         <el-tooltip placement="top" effect="dark">
                                             <template #content>
-                                                <div style="font-size: 13px; line-height: 1.6; max-width: 350px;">
+                                                <div style="font-size: 13px; line-height: 1.6; max-width: 400px;">
                                                     <b>【订单档案：{{ row.label }}】</b><br/>
                                                     客户主体：<span style="color:#fde047;">{{ row.customer }}</span> &nbsp; 业务员：{{ row.sales }}<br/>
-                                                    排期跨度：{{ new Date(row.task.start).toLocaleDateString() }} 至 <span style="color:#fde047;">{{ new Date(row.task.end).toLocaleDateString() }}</span><br/>
+                                                    合同周期：{{ new Date(row.task.start).toLocaleDateString() }} 至 <span style="color:#fde047;">{{ new Date(row.task.end).toLocaleDateString() }}</span><br/>
+                                                    <span v-if="row.task.hasPlannedSchedule">
+                                                        <b style="color:#60a5fa;">排产计划：{{ new Date(row.task.plannedStart).toLocaleDateString() }} 开始生产 → {{ new Date(row.task.plannedEnd).toLocaleDateString() }} 预计完成</b><br/>
+                                                    </span>
+                                                    <span v-else style="color:#f87171;">⚠️ 尚未排产</span>
                                                     <hr style="border: 0; border-top: 1px dashed #64748b; margin: 5px 0;">
-                                                    <b>综合执行进度：{{ row.task.progress.toFixed(1) }}%</b> <br/>
+                                                    <b>综合执行进度：{{ row.task.progress.toFixed(1) }}%</b><br/>
                                                     (已入库 {{ row.task.finished.toFixed(1) }} 米 / 总量 {{ row.task.total.toFixed(1) }} 米)<br/>
                                                     <hr style="border: 0; border-top: 1px dashed #64748b; margin: 5px 0;">
                                                     <b>包含的管带产品清单：</b>
                                                     <div v-for="it in row.task.items" :key="it.finishedPartNumber" style="font-size: 11px; color:#cbd5e1; margin-top:3px;">
-                                                        • {{ it.finishedPartNumber }} ({{ it.modelSpec }}): <br/>
+                                                        • {{ it.finishedPartNumber }} ({{ it.modelSpec }}):
                                                         &nbsp;&nbsp; 产出 {{ ((it.totalLength || (it.metersPerRoll*it.rollCount) || 0) - (it.unfinishedMeters != null ? it.unfinishedMeters : (it.totalLength || (it.metersPerRoll*it.rollCount) || 0))).toFixed(0) }} / {{ (it.totalLength || (it.metersPerRoll*it.rollCount) || 0).toFixed(0) }} m
                                                     </div>
                                                 </div>
                                             </template>
-                                            <span style="position: relative; z-index: 2; padding: 0 5px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">
+                                            <span style="position: relative; z-index: 3; padding: 0 5px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">
                                                 {{ row.task.progress.toFixed(1) }}%
                                             </span>
                                         </el-tooltip>
@@ -778,7 +836,83 @@
                         <div style="margin-top: 15px; display: flex; gap: 15px; font-size: 12px; color: #64748b;">
                             <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #8b5cf6; border-radius: 2px;"></div> 订单所有管带综合已完成比例</div>
                             <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #c4b5fd; opacity: 0.6; border-radius: 2px;"></div> 订单总欠数 (图形右侧硬性边界为合同约定交货期)</div>
+                            <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: linear-gradient(135deg, #3b82f6, #2563eb); border-radius: 2px;"></div> 排产计划生产周期</div>
+                            <div style="display: flex; align-items: center; gap: 5px;"><div style="width: 14px; height: 14px; background: #e2e8f0; border-radius: 2px;"></div> 合同约定周期（右侧边界为交货期）</div>
                         </div>
+
+                        <!-- 订单详细排产甘特图下钻弹窗 -->
+                        <el-dialog :title="'📊 订单 ' + drillDownOrderId + ' 详细排产甘特图'" v-model="drillDownDialogVisible" width="90%" top="5vh" destroy-on-close>
+                            <div v-loading="drillDownLoading">
+                                <div v-if="drillDownDetail">
+                                    <el-alert :title="`订单 ${drillDownDetail.orderId} 排产时间跨度: ${drillDownDetail.overallStartDate?.replace('T',' ')} 至 ${drillDownDetail.overallEndDate?.replace('T',' ')}，共 ${drillDownDetail.totalDays} 天`" type="info" show-icon style="margin-bottom: 15px;"></el-alert>
+
+                                    <!-- 甘特图区域 -->
+                                    <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px;">
+                                        <!-- 时间轴 -->
+                                        <div style="display: flex; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 8px;">
+                                            <div style="width: 180px; flex-shrink: 0; font-weight: bold; color: #64748b;">零件号轨道</div>
+                                            <div style="flex-grow: 1; position: relative; height: 25px;">
+                                                <div v-for="marker in drillDownGanttTimeline" :key="marker.left" :style="{ left: marker.left }"
+                                                     style="position: absolute; top: 0; font-size: 11px; font-weight: bold; color: #94a3b8; transform: translateX(-50%); border-left: 1px dashed #cbd5e1; padding-left: 5px; height: 100%;">
+                                                    {{ marker.label }}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <!-- 甘特行 -->
+                                        <div v-for="row in drillDownGanttRows" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 46px;">
+                                            <div style="width: 180px; flex-shrink: 0; font-weight: bold; font-size: 13px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px; box-sizing: border-box;">
+                                                {{ row.label }}
+                                            </div>
+                                            <div style="flex-grow: 1; position: relative; height: 100%; background: #f8fafc;">
+                                                <div v-for="task in row.tasks" :key="task.finishedPartNumber + task.typeStr"
+                                                     :style="{ left: task.left, width: task.width, backgroundColor: task.color }"
+                                                     style="position: absolute; height: 30px; top: 8px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 0 5px;">
+                                                    <el-tooltip placement="top" effect="light">
+                                                        <template #content>
+                                                            <div style="font-size: 13px; line-height: 1.6;">
+                                                                <b>【{{ task.typeStr }}详情】</b><br/>
+                                                                订单：{{ task.orderId }}<br/>
+                                                                <span v-if="task.typeStr.includes('织造')">带坯：{{ task.tapePartNumber }}</span>
+                                                                <span v-else>成品：{{ task.finishedPartNumber }}</span><br/>
+                                                                规格：{{ task.finishedModelSpec }}<br/>
+                                                                开始：<b style="color:#ef4444;">{{ task.rawStart }}</b><br/>
+                                                                结束：<b style="color:#10b981;">{{ task.rawEnd }}</b><br/>
+                                                                机台/产线：{{ task.plannedMachine || task.plannedLine || '待指派' }}
+                                                            </div>
+                                                        </template>
+                                                        <span>{{ task.label }}</span>
+                                                    </el-tooltip>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 排产明细表格 -->
+                                    <el-table :data="drillDownDetail.details" border size="small" style="width: 100%; margin-top: 15px;">
+                                        <el-table-column prop="finishedPartNumber" label="成品零件号" width="120"></el-table-column>
+                                        <el-table-column prop="tapePartNumber" label="带坯零件号" width="120"></el-table-column>
+                                        <el-table-column label="织造排期">
+                                            <template #default="scope">
+                                                <span v-if="scope.row.weavingStart">{{ scope.row.weavingStart?.replace('T',' ') }} ~ {{ scope.row.weavingEnd?.replace('T',' ') }}</span>
+                                                <el-tag v-else type="success" size="small">库存满足，免织造</el-tag>
+                                            </template>
+                                        </el-table-column>
+                                        <el-table-column label="共挤排期">
+                                            <template #default="scope">
+                                                {{ scope.row.coexStart?.replace('T',' ') }} ~ {{ scope.row.coexEnd?.replace('T',' ') }}
+                                            </template>
+                                        </el-table-column>
+                                        <el-table-column prop="plannedMachine" label="指派机台" width="100">
+                                            <template #default="scope">{{ scope.row.plannedMachine || '待指派' }}</template>
+                                        </el-table-column>
+                                        <el-table-column prop="plannedLine" label="指派产线" width="100">
+                                            <template #default="scope">{{ scope.row.plannedLine || '待指派' }}</template>
+                                        </el-table-column>
+                                    </el-table>
+                                </div>
+                                <el-empty v-else-if="!drillDownLoading" description="暂无排产数据"></el-empty>
+                            </div>
+                        </el-dialog>
                     </el-card>
                 </div>
 
@@ -789,6 +923,7 @@
 <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/element-plus"></script>
 <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+<script src="/utils.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

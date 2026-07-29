@@ -1,6 +1,7 @@
 package com.company.scheduling.service;
 
 import com.company.scheduling.domain.*;
+import com.company.scheduling.dto.MultiOrderScheduleRequest;
 import com.company.scheduling.dto.ScheduleAdjustmentRequest;
 import com.company.scheduling.repository.*;
 import org.springframework.stereotype.Service;
@@ -219,6 +220,263 @@ public class EstimationService {
         Map<String, Object> draft = new HashMap<>();
         draft.put("orderId", req.getOrderId()); draft.put("overallStartDate", overallStartDate.toString()); draft.put("overallEndDate", overallEndDate.toString()); draft.put("totalDays", ChronoUnit.DAYS.between(overallStartDate.toLocalDate(), overallEndDate.toLocalDate()) + 1); draft.put("details", itemSchedules);
         return draft;
+    }
+
+    // ================ 多订单并发排产引擎 ================
+    public Map<String, Object> previewMultiOrderSchedule(MultiOrderScheduleRequest req, String currentUser) {
+        List<String> orderIds = req.getOrderIds();
+        if (orderIds == null || orderIds.isEmpty()) throw new RuntimeException("订单列表不能为空！");
+
+        int bufferDays = req.getGlobalBufferDays() != null ? req.getGlobalBufferDays() : 3;
+        int weaveAdvance = req.getWeavingAdvanceDays() != null ? req.getWeavingAdvanceDays() : 2;
+
+        // 1. 收集所有订单并按交货期升序排序（贪心优先级）
+        List<ProductionOrder> allOrders = new ArrayList<>();
+        for (String orderId : orderIds) {
+            List<ProductionOrder> orders = orderRepo.findByOrderId(orderId);
+            if (orders != null) allOrders.addAll(orders);
+        }
+        if (allOrders.isEmpty()) throw new RuntimeException("查无订单，请核对订单号！");
+        allOrders.sort(Comparator.comparing(o -> o.getDeliveryDate() != null ? o.getDeliveryDate() : LocalDate.now().plusYears(10)));
+
+        // 2. 初始化资源占用时间线
+        LocalDateTime now = LocalDateTime.now();
+        Map<String, LocalDateTime> resourceTimeline = new HashMap<>();
+
+        List<WeavingMachineStatus> allWMachines = weavingStatusRepo.findAll();
+        List<CoexLineStatus> allCLines = coexStatusRepo.findAll();
+
+        // 从已有排产初始化时间线
+        for (WeavingMachineStatus wm : allWMachines) {
+            List<EstimatedProductionSchedule> existing = scheduleRepo.findByWeavingMachineIdAndWeavingEndDateAfter(wm.getMachineId(), now);
+            existing.stream()
+                .filter(e -> e.getWeavingEndDate() != null)
+                .max(Comparator.comparing(EstimatedProductionSchedule::getWeavingEndDate))
+                .ifPresent(e -> resourceTimeline.put("W_" + wm.getMachineId(), e.getWeavingEndDate()));
+        }
+        for (CoexLineStatus cl : allCLines) {
+            List<EstimatedProductionSchedule> existing = scheduleRepo.findByCoexLineIdAndCoexEndDateAfter(cl.getLineId(), now);
+            existing.stream()
+                .filter(e -> e.getCoexEndDate() != null)
+                .max(Comparator.comparing(EstimatedProductionSchedule::getCoexEndDate))
+                .ifPresent(e -> resourceTimeline.put("C_" + cl.getLineId(), e.getCoexEndDate()));
+        }
+
+        // 3. 逐订单排产
+        LocalDateTime overallStartDate = LocalDateTime.MAX;
+        LocalDateTime overallEndDate = LocalDateTime.MIN;
+        List<Map<String, Object>> allResults = new ArrayList<>();
+        List<String> conflictWarnings = new ArrayList<>();
+
+        for (ProductionOrder item : allOrders) {
+            BigDecimal finishedMeters = item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
+            BigDecimal tapeMetersNeeded = finishedMeters;
+
+            ProductProcess proc = processRepo.findByFinishedPartNumber(item.getFinishedPartNumber())
+                    .orElseThrow(() -> new RuntimeException("MISSING_PROCESS:" + item.getFinishedPartNumber()));
+            String tapePartNumber = proc.getTapePartNumber();
+
+            BigDecimal currentInventory = warehouseRepo.findByFinishedPartNumber(item.getFinishedPartNumber()).stream()
+                    .map(w -> w.getCurrentStockMeters() != null ? w.getCurrentStockMeters() : BigDecimal.ZERO).reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal shortfall = tapeMetersNeeded.subtract(currentInventory).max(BigDecimal.ZERO);
+
+            ScheduleAdjustmentRequest.ItemAdjustment itemAdj = req.getItemAdjustments() != null ?
+                    req.getItemAdjustments().stream().filter(a -> a.getFinishedPartNumber().equals(item.getFinishedPartNumber())).findFirst().orElse(null) : null;
+
+            BigDecimal wCap = getWeavingAvgCap(tapePartNumber);
+            BigDecimal cCap = getCoexAvgCap(item.getFinishedPartNumber());
+            BigDecimal changeoverDays = new BigDecimal("1");
+            Integer delayDays = 1;
+
+            if (itemAdj != null) {
+                if (itemAdj.getManualWeavingCapacity() != null) wCap = itemAdj.getManualWeavingCapacity();
+                if (itemAdj.getManualCoexCapacity() != null) cCap = itemAdj.getManualCoexCapacity();
+            }
+            if (wCap.compareTo(BigDecimal.ZERO) == 0 || cCap.compareTo(BigDecimal.ZERO) == 0) throw new RuntimeException("MISSING_CAPACITY:" + item.getFinishedPartNumber() + ":" + tapePartNumber);
+
+            LocalDateTime rawDeadline = item.getDeliveryDate() != null ? item.getDeliveryDate().atTime(23, 59, 59) : LocalDate.now().plusDays(30).atTime(23, 59, 59);
+            LocalDateTime deadline = rawDeadline.minusDays(bufferDays);
+
+            long availableHours = ChronoUnit.HOURS.between(now, deadline);
+            if (availableHours <= 0) availableHours = 1;
+
+            double wHoursNeeded = shortfall.compareTo(BigDecimal.ZERO) > 0 ? shortfall.divide(wCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0 : 0;
+            double cHoursNeeded = finishedMeters.divide(cCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0;
+            int splitCount = 1;
+            double maxHoursNeeded = Math.max(wHoursNeeded, cHoursNeeded);
+            if (maxHoursNeeded > availableHours) splitCount = (int) Math.ceil(maxHoursNeeded / availableHours);
+
+            Double caliber = extractCaliber(proc.getFinishedModelSpec());
+            List<WeavingMachineStatus> candidateWMachines = findBestWeavingMachines(caliber, allWMachines);
+            List<CoexLineStatus> candidateCLines = findBestCoexLines(caliber, allCLines);
+
+            int maxPhysical = Math.max(1, Math.max(candidateWMachines.size(), candidateCLines.size()));
+            if (splitCount > maxPhysical) splitCount = maxPhysical;
+
+            BigDecimal splitFinished = finishedMeters.divide(new BigDecimal(splitCount), 4, RoundingMode.HALF_UP);
+            BigDecimal splitShortfall = shortfall.divide(new BigDecimal(splitCount), 4, RoundingMode.HALF_UP);
+
+            Set<String> usedW = new HashSet<>();
+            Set<String> usedC = new HashSet<>();
+
+            for (int i = 0; i < splitCount; i++) {
+                // 选择未被本订单占用且时间线最早可用的资源
+                CoexLineStatus cl = candidateCLines.stream()
+                        .filter(l -> !usedC.contains(l.getLineId()))
+                        .min(Comparator.comparing(l -> resourceTimeline.getOrDefault("C_" + l.getLineId(), now)))
+                        .orElse(null);
+                if (cl != null) usedC.add(cl.getLineId());
+                Integer targetWs = cl != null ? extractWorkshopNumber(cl.getWorkshopId()) : null;
+
+                WeavingMachineStatus wm = candidateWMachines.stream()
+                        .filter(m -> !usedW.contains(m.getMachineId()))
+                        .max(Comparator.comparingInt(m -> {
+                            int score = scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines);
+                            Integer mWs = extractWorkshopNumber(m.getWorkshopId());
+                            if (targetWs != null && targetWs.equals(mWs)) score += 80;
+                            // 优先选择时间线更早可用的机台
+                            LocalDateTime avail = resourceTimeline.getOrDefault("W_" + m.getMachineId(), now);
+                            long penalty = ChronoUnit.HOURS.between(now, avail);
+                            score -= (int) Math.min(penalty, 100);
+                            return score;
+                        })).orElse(null);
+                if (wm != null) usedW.add(wm.getMachineId());
+
+                // 获取资源可用时间
+                LocalDateTime machineAvailableTime = wm != null ? resourceTimeline.getOrDefault("W_" + wm.getMachineId(), now) : now;
+                LocalDateTime lineAvailableTime = cl != null ? resourceTimeline.getOrDefault("C_" + cl.getLineId(), now) : now;
+
+                BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+                BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+
+                LocalDateTime coexEnd = deadline;
+                LocalDateTime coexStart = coexEnd.minusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
+
+                LocalDateTime weavingEnd = coexEnd.minusDays(weaveAdvance);
+                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
+
+                if (shortfall.compareTo(BigDecimal.ZERO) > 0 && weavingStart.isAfter(coexStart.minusDays(weaveAdvance))) {
+                    weavingStart = coexStart.minusDays(weaveAdvance);
+                }
+
+                // 根据资源时间线调整排产开始时间
+                if (shortfall.compareTo(BigDecimal.ZERO) > 0 && weavingStart.isBefore(machineAvailableTime)) {
+                    long shift = ChronoUnit.MINUTES.between(weavingStart, machineAvailableTime);
+                    weavingStart = machineAvailableTime;
+                    weavingEnd = weavingEnd.plusMinutes(shift);
+                    conflictWarnings.add("机台 " + (wm != null ? wm.getMachineId() : "N/A") + " 被占用，织造延至 " + weavingStart);
+                }
+                if (coexStart.isBefore(lineAvailableTime)) {
+                    long shift = ChronoUnit.MINUTES.between(coexStart, lineAvailableTime);
+                    coexStart = lineAvailableTime;
+                    coexEnd = coexEnd.plusMinutes(shift);
+                    conflictWarnings.add("产线 " + (cl != null ? cl.getLineId() : "N/A") + " 被占用，共挤延至 " + coexStart);
+                }
+
+                if (weavingStart.isBefore(now) || coexStart.isBefore(now)) {
+                    LocalDateTime earliest = weavingStart.isBefore(coexStart) ? weavingStart : coexStart;
+                    long shiftMinutes = ChronoUnit.MINUTES.between(earliest, now);
+                    weavingStart = weavingStart.plusMinutes(shiftMinutes); weavingEnd = weavingEnd.plusMinutes(shiftMinutes);
+                    coexStart = coexStart.plusMinutes(shiftMinutes); coexEnd = coexEnd.plusMinutes(shiftMinutes);
+                }
+
+                // 更新资源时间线
+                if (wm != null && shortfall.compareTo(BigDecimal.ZERO) > 0) {
+                    resourceTimeline.put("W_" + wm.getMachineId(), weavingEnd);
+                }
+                if (cl != null) {
+                    resourceTimeline.put("C_" + cl.getLineId(), coexEnd);
+                }
+
+                ScheduleDates wDates = new ScheduleDates(); wDates.startDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingStart : null; wDates.endDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingEnd : null; wDates.algoWeavingCapacity = wCap; wDates.algoChangeoverDays = changeoverDays;
+                ScheduleDates cDates = new ScheduleDates(); cDates.startDate = coexStart; cDates.endDate = coexEnd; cDates.algoCoexCapacity = cCap; cDates.algoDelayDays = delayDays;
+
+                String orderId = orderIds.stream().filter(id -> orderRepo.findByOrderId(id).stream().anyMatch(o -> o.getFinishedPartNumber().equals(item.getFinishedPartNumber()))).findFirst().orElse(orderIds.get(0));
+                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, orderId);
+                draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
+                draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
+                allResults.add(draftItem);
+
+                if (wDates.startDate != null && wDates.startDate.isBefore(overallStartDate)) overallStartDate = wDates.startDate;
+                if (cDates.startDate.isBefore(overallStartDate)) overallStartDate = cDates.startDate;
+                if (cDates.endDate.isAfter(overallEndDate)) overallEndDate = cDates.endDate;
+            }
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("results", allResults);
+        result.put("overallStartDate", overallStartDate != LocalDateTime.MAX ? overallStartDate.toString() : null);
+        result.put("overallEndDate", overallEndDate != LocalDateTime.MIN ? overallEndDate.toString() : null);
+        result.put("conflictWarnings", conflictWarnings);
+        return result;
+    }
+
+    public List<Map<String, Object>> getScheduleSummary() {
+        List<Object[]> summaries = scheduleRepo.findScheduleSummaryByOrder();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object[] row : summaries) {
+            Map<String, Object> map = new HashMap<>();
+            map.put("orderId", row[0]);
+            map.put("plannedStartDate", row[1] != null ? row[1].toString() : null);
+            map.put("plannedEndDate", row[2] != null ? row[2].toString() : null);
+            result.add(map);
+        }
+        return result;
+    }
+
+    public Map<String, Object> getScheduleExecutionStatus(String orderId) {
+        List<EstimatedProductionSchedule> schedules = scheduleRepo.findByOrderId(orderId);
+        if (schedules.isEmpty()) throw new RuntimeException("该订单无排产记录");
+
+        List<Map<String, Object>> details = new ArrayList<>();
+        for (EstimatedProductionSchedule es : schedules) {
+            Map<String, Object> detail = new HashMap<>();
+            detail.put("finishedPartNumber", es.getFinishedPartNumber());
+            detail.put("tapePartNumber", es.getTapePartNumber());
+            detail.put("plannedWeavingStart", es.getWeavingStartDate() != null ? es.getWeavingStartDate().toString() : null);
+            detail.put("plannedWeavingEnd", es.getWeavingEndDate() != null ? es.getWeavingEndDate().toString() : null);
+            detail.put("plannedCoexStart", es.getCoexStartDate() != null ? es.getCoexStartDate().toString() : null);
+            detail.put("plannedCoexEnd", es.getCoexEndDate() != null ? es.getCoexEndDate().toString() : null);
+            detail.put("plannedMachine", es.getWeavingMachineId());
+            detail.put("plannedLine", es.getCoexLineId());
+
+            BigDecimal actualWeavingOutput = BigDecimal.ZERO;
+            BigDecimal actualCoexOutput = BigDecimal.ZERO;
+
+            if (es.getTapePartNumber() != null && es.getWeavingStartDate() != null) {
+                List<WeavingDailyLog> wLogs = weavingLogRepo.findByTapePartNumber(es.getTapePartNumber());
+                actualWeavingOutput = wLogs.stream()
+                    .filter(l -> l.getEntryDate() != null && !l.getEntryDate().isBefore(es.getWeavingStartDate().toLocalDate()))
+                    .map(l -> l.getCapacityPerDay() != null ? l.getCapacityPerDay() : BigDecimal.ZERO)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            }
+
+            if (es.getFinishedPartNumber() != null && es.getCoexStartDate() != null) {
+                List<CoexDailyLog> cLogs = coexLogRepo.findByFinishedPartNumber(es.getFinishedPartNumber());
+                actualCoexOutput = cLogs.stream()
+                    .filter(l -> l.getEntryDate() != null && !l.getEntryDate().isBefore(es.getCoexStartDate().toLocalDate()))
+                    .map(l -> l.getCapacityPerDay() != null ? l.getCapacityPerDay() : BigDecimal.ZERO)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            }
+
+            detail.put("actualWeavingOutput", actualWeavingOutput);
+            detail.put("actualCoexOutput", actualCoexOutput);
+
+            long plannedWeavingDays = es.getWeavingStartDate() != null && es.getWeavingEndDate() != null ?
+                ChronoUnit.DAYS.between(es.getWeavingStartDate().toLocalDate(), es.getWeavingEndDate().toLocalDate()) + 1 : 0;
+            long plannedCoexDays = es.getCoexStartDate() != null && es.getCoexEndDate() != null ?
+                ChronoUnit.DAYS.between(es.getCoexStartDate().toLocalDate(), es.getCoexEndDate().toLocalDate()) + 1 : 0;
+            detail.put("plannedWeavingDays", plannedWeavingDays);
+            detail.put("plannedCoexDays", plannedCoexDays);
+
+            details.add(detail);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("orderId", orderId);
+        result.put("details", details);
+        result.put("hasSchedule", !schedules.isEmpty());
+        return result;
     }
 
     private BigDecimal getWeavingAvgCap(String tapePn) {

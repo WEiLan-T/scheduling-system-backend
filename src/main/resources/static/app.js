@@ -25,7 +25,8 @@ const app = createApp({
             const user = localStorage.getItem('current_user');
             if (token && user) {
                 isLoggedIn.value = true; currentUser.value = user;
-                loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); loadOrders(); loadProcesses();
+                loadMachinesAndLines();
+                loadOrders();  // 只加载订单和机台，其他页面切换时按需加载
             }
         });
 
@@ -36,7 +37,7 @@ const app = createApp({
 
         const isLoggedIn = ref(false);
         const currentUser = ref('');
-        const activeMenu = ref('dashboard');
+        const activeMenu = ref('order-dashboard');
         const loading = ref(false);
 
         const machineList = ref([]);
@@ -77,7 +78,7 @@ const app = createApp({
                 if (res.data && res.data.includes('eyJ')) {
                     localStorage.setItem('jwt_token', res.data.trim()); localStorage.setItem('current_user', loginForm.username);
                     isLoggedIn.value = true; currentUser.value = loginForm.username; ElMessage.success('核验通过！');
-                    loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); loadOrders(); loadProcesses();
+                    loadMachinesAndLines(); loadOrders();
                 }
             } catch (error) { if(error.response && error.response.status === 401) ElMessage.error('账号或密码错误！'); } finally { loading.value = false; }
         };
@@ -94,7 +95,7 @@ const app = createApp({
             else if (activeMenu.value === 'order') { loadOrders(); ElMessage.success('🔄 销售合同档案订单库已刷新'); }
             else if (activeMenu.value === 'order-dashboard') { loadOrders(); ElMessage.success('🔄 订单交期全景大盘已更新'); }
             else if (activeMenu.value === 'execution') {
-                loadWeavingLogs(); loadCoexLogs(); loadOrders();
+                loadWeavingLogs(); loadCoexLogs(); loadOrders(); loadAllSchedulePlans();
                 ElMessage.success('🔄 全厂订单执行仪表板实时数据获取成功！');
             }
             else if (activeMenu.value === 'estimation') {
@@ -317,6 +318,20 @@ const app = createApp({
                 });
                 orderList.value = Object.values(map);
             } catch(e) {}
+            // 附加排产状态
+            try {
+                const schedRes = await axios.get('/api/v1/workshops/estimation/schedule-summary');
+                if (Array.isArray(schedRes.data)) {
+                    orderList.value.forEach(o => {
+                        const sched = schedRes.data.find(s => s.orderId === o.orderId);
+                        o.scheduleStatus = sched ? '已排产' : '未排产';
+                        o.plannedStartDate = sched ? sched.plannedStartDate : null;
+                        o.plannedEndDate = sched ? sched.plannedEndDate : null;
+                    });
+                }
+            } catch (e) {
+                // 排产状态获取失败不影响订单列表显示
+            }
         };
 
         const submitOrder = async () => {
@@ -354,6 +369,64 @@ const app = createApp({
         const capacityDialogVisible = ref(false);
         const capacityPrompt = reactive({ finishedPartNumber: '', tapePartNumber: '' });
         const manualCap = reactive({ weaving: 0, coex: 0 });
+
+        const orderSuggestions = computed(() => {
+            if (!estForm.orderId) return [];
+            return orderList.value
+                .filter(o => o.orderId && o.orderId.includes(estForm.orderId))
+                .map(o => ({ value: o.orderId, label: `${o.orderId} - ${o.customerName || ''}` }));
+        });
+
+        const multiOrderMode = ref(false);
+        const selectedOrderIds = ref([]);
+        const multiOrderResult = ref(null);
+
+        const fetchMultiOrderSchedule = async () => {
+            if (selectedOrderIds.value.length === 0) {
+                ElMessage.warning('请至少选择一个订单！');
+                return;
+            }
+            loading.value = true;
+            try {
+                const res = await axios.post('/api/v1/workshops/estimation/preview-multi', {
+                    orderIds: selectedOrderIds.value,
+                    globalBufferDays: estForm.globalBufferDays,
+                    weavingAdvanceDays: estForm.weavingAdvanceDays
+                });
+                const data = res.data;
+                multiOrderResult.value = data;
+                // 适配为与单订单一致的格式，使现有甘特图渲染逻辑可以复用
+                estResult.value = {
+                    orderId: '多订单合并排产',
+                    details: data.results || [],
+                    overallStartDate: data.overallStartDate,
+                    overallEndDate: data.overallEndDate,
+                    totalDays: data.overallStartDate && data.overallEndDate ? 
+                        Math.ceil((new Date(data.overallEndDate) - new Date(data.overallStartDate)) / (1000*60*60*24)) + 1 : 0,
+                    conflictWarnings: data.conflictWarnings || []
+                };
+                ElMessage.success('多订单排产推演完毕！');
+            } catch (error) {
+                const msg = error.response?.data || '';
+                ElMessage.error(typeof msg === 'string' ? msg : '多订单排产失败');
+            } finally {
+                loading.value = false;
+            }
+        };
+
+        const loadScheduleSummary = async () => {
+            try {
+                const res = await axios.get('/api/v1/workshops/estimation/schedule-summary');
+                scheduleSummaryMap.value = {};
+                if (Array.isArray(res.data)) {
+                    res.data.forEach(item => {
+                        scheduleSummaryMap.value[item.orderId] = item;
+                    });
+                }
+            } catch (e) {}
+        };
+
+        const scheduleSummaryMap = ref({});
 
         const fetchInitialDraft = async () => {
             if (!estForm.orderId) return;
@@ -827,6 +900,70 @@ const app = createApp({
         const orderViewDays = ref('auto'); // 订单甘特图的缩放级别
 
         // 组装订单横排数据
+        const allSchedulePlans = ref([]);
+        const loadAllSchedulePlans = async () => {
+            try {
+                const res = await axios.get('/api/v1/workshops/estimation/schedule-summary');
+                if (Array.isArray(res.data)) {
+                    allSchedulePlans.value = res.data;
+                }
+            } catch (e) {}
+        };
+
+        const dashboardRowsWithPlanOverlay = computed(() => {
+            return dashboardRowsWithPos.value.map(r => {
+                let planInfo = null;
+                if (r.task) {
+                    const orderId = r.task.orderId;
+                    const plan = allSchedulePlans.value.find(p => p.orderId === orderId);
+                    if (plan && plan.plannedStartDate && plan.plannedEndDate) {
+                        const planStart = new Date(plan.plannedStartDate).getTime();
+                        const planEnd = new Date(plan.plannedEndDate).getTime();
+                        const { minTime, span } = dashboardBounds.value;
+                        const ps = Math.max(minTime, planStart);
+                        const pe = Math.min(minTime + span, planEnd);
+                        planInfo = {
+                            left: ((ps - minTime) / span * 100) + '%',
+                            width: ((pe - ps) / span * 100) + '%',
+                            plannedStart: plan.plannedStartDate,
+                            plannedEnd: plan.plannedEndDate,
+                            orderId: orderId
+                        };
+                    }
+                }
+                return { ...r, planInfo };
+            });
+        });
+
+        const applyManualAdjustments = async () => {
+            if (!estResult.value || !estResult.value.details) return;
+            loading.value = true;
+            try {
+                const adjustments = estResult.value.details
+                    .filter(d => d.manualWeavingCap || d.manualCoexCap)
+                    .map(d => ({
+                        finishedPartNumber: d.finishedPartNumber,
+                        manualWeavingCapacity: d.manualWeavingCap || undefined,
+                        manualCoexCapacity: d.manualCoexCap || undefined
+                    }));
+                
+                const reqBody = {
+                    orderId: estResult.value.orderId,
+                    globalBufferDays: estForm.globalBufferDays,
+                    weavingAdvanceDays: estForm.weavingAdvanceDays,
+                    itemAdjustments: adjustments.length > 0 ? adjustments : undefined
+                };
+                
+                const res = await axios.post('/api/v1/workshops/estimation/preview', reqBody);
+                estResult.value = res.data;
+                ElMessage.success('已根据人工调整参数重新推演！');
+            } catch (error) {
+                ElMessage.error('重新推演失败，请检查参数');
+            } finally {
+                loading.value = false;
+            }
+        };
+
         const orderGanttRows = computed(() => {
             const rows = [];
             orderList.value.forEach(o => {
@@ -851,6 +988,7 @@ const app = createApp({
                 const finished = Math.max(0, total - unfinished);
                 const progress = total > 0 ? (finished / total * 100) : 0;
 
+                const scheduleData = scheduleSummaryMap.value[o.orderId];
                 rows.push({
                     id: o.orderId,
                     label: o.orderId,
@@ -858,7 +996,10 @@ const app = createApp({
                     sales: o.salesperson || '未知',
                     task: {
                         start, end, total, finished, unfinished, progress,
-                        items: o.items || []
+                        items: o.items || [],
+                        plannedStart: scheduleData ? new Date(scheduleData.plannedStartDate).getTime() : null,
+                        plannedEnd: scheduleData ? new Date(scheduleData.plannedEndDate).getTime() : null,
+                        hasPlannedSchedule: !!scheduleData
                     }
                 });
             });
@@ -916,19 +1057,133 @@ const app = createApp({
                     const e = Math.min(maxTime, r.task.end);
                     r.task.left = ((s - minTime) / span * 100) + '%';
                     r.task.width = ((e - s) / span * 100) + '%';
-                    r.task.pastPct = r.task.progress + '%'; // 填充背景色比例等于订单完成率
+                    r.task.pastPct = r.task.progress + '%';
+                    if (r.task.hasPlannedSchedule) {
+                        const ps = Math.max(minTime, r.task.plannedStart);
+                        const pe = Math.min(maxTime, r.task.plannedEnd);
+                        r.task.plannedLeft = ((ps - minTime) / span * 100) + '%';
+                        r.task.plannedWidth = ((pe - ps) / span * 100) + '%';
+                    }
                 }
                 return r;
             });
         });
 
+        // ==========================================
+        // 🔍 订单甘特图下钻：详细排产甘特图弹窗
+        // ==========================================
+        const drillDownDialogVisible = ref(false);
+        const drillDownOrderId = ref('');
+        const drillDownDetail = ref(null);
+        const drillDownLoading = ref(false);
+
+        const drillDownGanttTimeline = computed(() => {
+            if (!drillDownDetail.value || !drillDownDetail.value.details) return [];
+            let minTime = new Date('2099-01-01').getTime();
+            let maxTime = new Date('2000-01-01').getTime();
+            drillDownDetail.value.details.forEach(d => {
+                if (d.weavingStart) minTime = Math.min(minTime, new Date(d.weavingStart).getTime());
+                if (d.weavingEnd) maxTime = Math.max(maxTime, new Date(d.weavingEnd).getTime());
+                if (d.coexStart) minTime = Math.min(minTime, new Date(d.coexStart).getTime());
+                if (d.coexEnd) maxTime = Math.max(maxTime, new Date(d.coexEnd).getTime());
+            });
+            const span = maxTime - minTime;
+            minTime -= span * 0.05; maxTime += span * 0.05;
+            const markers = [];
+            const days = span / (1000 * 60 * 60 * 24);
+            let step = 1;
+            if (days > 15) step = Math.ceil(days / 10);
+            for (let t = minTime; t <= maxTime; t += step * 24 * 3600 * 1000) {
+                const dateObj = new Date(t);
+                markers.push({ left: ((t - minTime) / (maxTime - minTime) * 100) + '%', label: `${dateObj.getMonth() + 1}月${dateObj.getDate()}日` });
+            }
+            return markers;
+        });
+
+        const drillDownGanttRows = computed(() => {
+            if (!drillDownDetail.value || !drillDownDetail.value.details) return [];
+            let minTime = new Date('2099-01-01').getTime();
+            let maxTime = new Date('2000-01-01').getTime();
+            drillDownDetail.value.details.forEach(d => {
+                if (d.weavingStart) minTime = Math.min(minTime, new Date(d.weavingStart).getTime());
+                if (d.weavingEnd) maxTime = Math.max(maxTime, new Date(d.weavingEnd).getTime());
+                if (d.coexStart) minTime = Math.min(minTime, new Date(d.coexStart).getTime());
+                if (d.coexEnd) maxTime = Math.max(maxTime, new Date(d.coexEnd).getTime());
+            });
+            const span = maxTime - minTime;
+            minTime -= span * 0.05; maxTime += span * 0.05;
+            const totalSpan = maxTime - minTime;
+            const rowsMap = new Map();
+            const colors = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ec4899', '#f43f5e'];
+            drillDownDetail.value.details.forEach((d, idx) => {
+                const color = colors[idx % colors.length];
+                if (d.weavingStart) {
+                    const rowKey = 'W_' + d.tapePartNumber;
+                    if (!rowsMap.has(rowKey)) {
+                        rowsMap.set(rowKey, { id: rowKey, label: '🧶 ' + d.tapePartNumber, type: 'weaving', tasks: [] });
+                    }
+                    const s = new Date(d.weavingStart).getTime();
+                    const e = new Date(d.weavingEnd).getTime();
+                    rowsMap.get(rowKey).tasks.push({
+                        ...d, rawStart: d.weavingStart.replace('T',' '), rawEnd: d.weavingEnd.replace('T',' '),
+                        left: ((s - minTime) / totalSpan * 100) + '%', width: ((e - s) / totalSpan * 100) + '%',
+                        color: color, label: `带坯:${d.tapePartNumber} (${d.tapeMetersNeed.toFixed(0)}m)`,
+                        typeStr: '织造排期'
+                    });
+                }
+                if (d.coexStart) {
+                    const rowKey = 'C_' + d.finishedPartNumber;
+                    if (!rowsMap.has(rowKey)) {
+                        rowsMap.set(rowKey, { id: rowKey, label: '🗜️ ' + d.finishedPartNumber, type: 'coex', tasks: [] });
+                    }
+                    const s = new Date(d.coexStart).getTime();
+                    const e = new Date(d.coexEnd).getTime();
+                    rowsMap.get(rowKey).tasks.push({
+                        ...d, rawStart: d.coexStart.replace('T',' '), rawEnd: d.coexEnd.replace('T',' '),
+                        left: ((s - minTime) / totalSpan * 100) + '%', width: ((e - s) / totalSpan * 100) + '%',
+                        color: color, label: `成品:${d.finishedPartNumber} (${d.finishedMeters.toFixed(0)}m)`,
+                        typeStr: '共挤排期'
+                    });
+                }
+            });
+            return Array.from(rowsMap.values());
+        });
+
+        const openOrderDetail = async (orderId) => {
+            drillDownOrderId.value = orderId;
+            drillDownLoading.value = true;
+            drillDownDialogVisible.value = true;
+            drillDownDetail.value = null;
+            try {
+                const res = await axios.post('/api/v1/workshops/estimation/preview', { orderId: orderId });
+                drillDownDetail.value = res.data;
+            } catch (error) {
+                const msg = error.response?.data || '';
+                if (typeof msg === 'string' && msg.startsWith('MISSING_PROCESS:')) {
+                    ElMessage.warning('该订单缺少工艺路线定义，请先配置工艺参数');
+                } else if (typeof msg === 'string' && msg.startsWith('MISSING_CAPACITY:')) {
+                    ElMessage.warning('该订单缺少产能数据，请先录入历史产能');
+                } else {
+                    ElMessage.error('获取排产详情失败');
+                }
+            } finally {
+                drillDownLoading.value = false;
+            }
+        };
+
         // 🌟 将新页面加入到路由刷新监听器中
+        const loadedPages = ref(new Set());
         watch(activeMenu, (newVal) => {
+            if (loadedPages.value.has(newVal)) return;
+            loadedPages.value.add(newVal);
             if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); }
-            if (newVal === 'inventory') loadInventory(); if (newVal === 'weaving') loadWeavingLogs();
-            if (newVal === 'coex') loadCoexLogs(); if (newVal === 'order') loadOrders(); if (newVal === 'process') loadProcesses();
-            if (newVal === 'execution') { loadWeavingLogs(); loadCoexLogs(); loadOrders(); }
-            if (newVal === 'order-dashboard') { loadOrders(); }
+            if (newVal === 'inventory') loadInventory(); 
+            if (newVal === 'weaving') loadWeavingLogs();
+            if (newVal === 'coex') loadCoexLogs(); 
+            if (newVal === 'order') loadOrders(); 
+            if (newVal === 'process') loadProcesses();
+            if (newVal === 'execution') { loadWeavingLogs(); loadCoexLogs(); loadOrders(); loadAllSchedulePlans(); }
+            if (newVal === 'order-dashboard') { loadOrders(); loadScheduleSummary(); }
         });
 
 
@@ -943,7 +1198,13 @@ const app = createApp({
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processSearch, processPage, paginatedProcessList, processTotal,
             allWeavingMachines, factoryLines,
             executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos, dashboardViewDays,
-            orderFileRef, exportOrderExcel, handleOrderImport,orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX
+            orderFileRef, exportOrderExcel, handleOrderImport, orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX,
+            multiOrderMode, selectedOrderIds, fetchMultiOrderSchedule, multiOrderResult,
+            scheduleSummaryMap, loadScheduleSummary, orderSuggestions,
+            drillDownDialogVisible, drillDownOrderId, drillDownDetail, drillDownLoading,
+            drillDownGanttTimeline, drillDownGanttRows, openOrderDetail,
+            allSchedulePlans, loadAllSchedulePlans, dashboardRowsWithPlanOverlay,
+            applyManualAdjustments
         };
     }
 });
