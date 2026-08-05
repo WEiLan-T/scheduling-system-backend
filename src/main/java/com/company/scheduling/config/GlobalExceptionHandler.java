@@ -1,12 +1,15 @@
 package com.company.scheduling.config;
 
+import org.apache.poi.ooxml.POIXMLException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MultipartException;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -34,6 +37,19 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 登录认证失败（账号不存在或密码错误）
+     * 返回 401 Unauthorized + 明确提示，前端据此提示“帐号或密码错误”
+     */
+    @ExceptionHandler(BadCredentialsException.class)
+    public ResponseEntity<Map<String, Object>> handleBadCredentials(BadCredentialsException ex) {
+        log.warn("登录认证失败: {}", ex.getMessage());
+        Map<String, Object> body = new HashMap<>();
+        body.put("status", 401);
+        body.put("message", "账号或密码错误！");
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+    }
+
+    /**
      * 权限不足异常
      */
     @ExceptionHandler(AccessDeniedException.class)
@@ -42,6 +58,33 @@ public class GlobalExceptionHandler {
         body.put("status", 403);
         body.put("message", "权限不足，无法执行此操作！");
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
+    /**
+     * Excel文件解析异常
+     */
+    @ExceptionHandler(POIXMLException.class)
+    public ResponseEntity<Map<String, String>> handleExcelException(POIXMLException ex) {
+        log.warn("Excel解析异常: {}", ex.getMessage());
+        return ResponseEntity.badRequest().body(Map.of("error", "Excel文件解析失败: " + ex.getMessage()));
+    }
+
+    /**
+     * MultipartFile上传异常（文件为空/格式非法）
+     */
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<Map<String, String>> handleMultipartException(MultipartException ex) {
+        log.warn("文件上传异常: {}", ex.getMessage());
+        return ResponseEntity.badRequest().body(Map.of("error", "请上传有效的Excel文件"));
+    }
+
+    /**
+     * 数据质量/参数校验异常
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("参数校验异常: {}", ex.getMessage());
+        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
     }
 
     /**

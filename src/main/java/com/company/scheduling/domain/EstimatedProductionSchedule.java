@@ -4,7 +4,13 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-@Data @Entity @Table(name = "estimated_production_schedule")
+@Data @Entity @Table(name = "estimated_production_schedule", indexes = {
+        @Index(name = "idx_eps_order_id", columnList = "orderId"),
+        @Index(name = "idx_eps_weaving_machine_id", columnList = "weavingMachineId"),
+        @Index(name = "idx_eps_coex_line_id", columnList = "coexLineId"),
+        @Index(name = "idx_eps_weaving_end_date", columnList = "weavingEndDate"),
+        @Index(name = "idx_eps_coex_end_date", columnList = "coexEndDate")
+})
 public class EstimatedProductionSchedule {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer id;

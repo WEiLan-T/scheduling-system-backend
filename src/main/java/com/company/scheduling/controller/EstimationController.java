@@ -53,4 +53,11 @@ public class EstimationController {
     public ResponseEntity<?> executionStatus(@PathVariable String orderId) {
         return ResponseEntity.ok(estimationService.getScheduleExecutionStatus(orderId));
     }
+
+    // 🌟 可用资源查询（按成品料号获取兼容的机台和产线）
+    @GetMapping("/available-resources/{finishedPartNumber}")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<?> availableResources(@PathVariable String finishedPartNumber) {
+        return ResponseEntity.ok(estimationService.getAvailableResources(finishedPartNumber));
+    }
 }

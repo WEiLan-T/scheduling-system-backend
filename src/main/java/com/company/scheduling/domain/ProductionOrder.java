@@ -6,7 +6,10 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-@Data @Entity @Table(name = "production_orders")
+@Data @Entity @Table(name = "production_orders", indexes = {
+        @Index(name = "idx_po_order_id", columnList = "orderId"),
+        @Index(name = "idx_po_finished_part_number", columnList = "finishedPartNumber")
+})
 public class ProductionOrder {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer id;

@@ -3,8 +3,13 @@ package com.company.scheduling.util;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.DateUtil;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Excel 单元格读取与安全类型转换静态工具类
@@ -45,5 +50,138 @@ public final class ExcelUtils {
     public static Integer parseIntegerSafely(String str) {
         if (str == null || str.trim().isEmpty()) return null;
         try { return (int) Double.parseDouble(str.trim()); } catch (Exception e) { return null; }
+    }
+
+    /**
+     * 在前N行中扫描查找表头行
+     * 可处理库存Excel中表头偏移（如第3行）的情况
+     *
+     * @param sheet       Excel Sheet
+     * @param keywords    表头关键字数组（如 ["零件号", "机台号", "班次"]）
+     * @param maxScanRows 最大扫描行数（默认5）
+     * @return 表头所在行索引，未找到返回-1
+     */
+    public static int locateHeaderRow(Sheet sheet, String[] keywords, int maxScanRows) {
+        if (sheet == null || keywords == null || keywords.length == 0) return -1;
+        int scanLimit = maxScanRows > 0 ? maxScanRows : 5;
+        int lastRow = Math.min(sheet.getLastRowNum(), scanLimit - 1);
+        for (int r = 0; r <= lastRow; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            int matched = 0;
+            for (String keyword : keywords) {
+                if (keyword == null || keyword.isEmpty()) continue;
+                boolean found = false;
+                for (int c = row.getFirstCellNum(); c >= 0 && c < row.getLastCellNum(); c++) {
+                    String value = getCellStringValue(row.getCell(c));
+                    if (value.contains(keyword)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) matched++;
+            }
+            // 所有关键字均命中则认定为表头行
+            if (matched == keywords.length) return r;
+        }
+        return -1;
+    }
+
+    /**
+     * 从文件名提取年份
+     * 正则: (20)\d{2} 提取4位年份，如 "01水电气统计202606.xlsx" → 2026
+     * 也支持2位年份如 "25" → 2025
+     *
+     * @param fileName 文件名
+     * @return 年份，解析失败返回null
+     */
+    public static Integer extractYearFromFileName(String fileName) {
+        if (fileName == null || fileName.trim().isEmpty()) return null;
+        // 优先匹配4位年份（20xx/19xx）
+        Matcher fourDigit = Pattern.compile("(20|19)\\d{2}").matcher(fileName);
+        if (fourDigit.find()) {
+            return Integer.parseInt(fourDigit.group());
+        }
+        // 其次匹配独立的2位年份
+        Matcher twoDigit = Pattern.compile("(?:^|[^0-9])(\\d{2})(?:[^0-9]|$)").matcher(fileName);
+        if (twoDigit.find()) {
+            return 2000 + Integer.parseInt(twoDigit.group(1));
+        }
+        return null;
+    }
+
+    /**
+     * Excel日期序列号转LocalDate
+     * 如 46023 → 2026-01-01
+     *
+     * @param serialNumber Excel日期序列号
+     * @return LocalDate，非法序列号返回null
+     */
+    public static LocalDate excelSerialToLocalDate(double serialNumber) {
+        try {
+            // Excel以1899-12-30为基准日（含1900闰年bug补偿）
+            return LocalDate.of(1899, 12, 30).plusDays((long) serialNumber);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 安全获取单元格值（统一为String）
+     * 处理NUMERIC/STRING/BOOLEAN/FORMULA/BLANK等所有类型
+     */
+    public static String getCellStringValue(Cell cell) {
+        if (cell == null) return "";
+        try {
+            switch (cell.getCellType()) {
+                case STRING:
+                    return cell.getStringCellValue().trim();
+                case NUMERIC:
+                    if (DateUtil.isCellDateFormatted(cell)) {
+                        return cell.getLocalDateTimeCellValue() == null ? ""
+                                : cell.getLocalDateTimeCellValue().toLocalDate().toString();
+                    }
+                    double val = cell.getNumericCellValue();
+                    if (val == (long) val) return String.valueOf((long) val);
+                    return String.valueOf(val);
+                case BOOLEAN:
+                    return String.valueOf(cell.getBooleanCellValue());
+                case FORMULA:
+                    return getFormulaCellValue(cell);
+                case BLANK:
+                default:
+                    return "";
+            }
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * 读取公式单元格的缓存结果值
+     */
+    private static String getFormulaCellValue(Cell cell) {
+        try {
+            CellType cachedType = cell.getCachedFormulaResultType();
+            switch (cachedType) {
+                case STRING:
+                    return cell.getStringCellValue().trim();
+                case NUMERIC:
+                    if (DateUtil.isCellDateFormatted(cell)) {
+                        return cell.getLocalDateTimeCellValue() == null ? ""
+                                : cell.getLocalDateTimeCellValue().toLocalDate().toString();
+                    }
+                    double val = cell.getNumericCellValue();
+                    if (val == (long) val) return String.valueOf((long) val);
+                    return String.valueOf(val);
+                case BOOLEAN:
+                    return String.valueOf(cell.getBooleanCellValue());
+                default:
+                    return "";
+            }
+        } catch (Exception e) {
+            try { return cell.getStringCellValue().trim(); }
+            catch (Exception ex) { return ""; }
+        }
     }
 }

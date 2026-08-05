@@ -81,7 +81,7 @@ public class SecurityConfig {
                         // 放行内部路由与错误页面
                         .dispatcherTypeMatchers(DispatcherType.FORWARD, DispatcherType.ERROR).permitAll()
                         // 放行前端静态资源
-                        .requestMatchers("/", "/index.html", "/app.js", "/css/**", "/js/**", "/images/**", "/favicon.ico", "/error").permitAll()
+                        .requestMatchers("/", "/index.html", "/app.js", "/utils.js", "/css/**", "/js/**", "/images/**", "/favicon.ico", "/error").permitAll()
                         // 放行登录与注册
                         .requestMatchers("/api/v1/auth/**").permitAll()
                         // 其他一律零信任拦截

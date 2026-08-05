@@ -22,5 +22,9 @@ public class ScheduleAdjustmentRequest {
         private BigDecimal manualCoexCapacity;
         private Integer manualStartDelayDays;
         private BigDecimal manualWeavingCapacity;
+        private Integer manualWeavingMachineCount;  // 手动指定织造机台数
+        private Integer manualCoexLineCount;        // 手动指定共挤产线数
+        private List<String> assignedMachineIds;    // 指定织造机台ID列表
+        private List<String> assignedLineIds;       // 指定共挤产线ID列表
     }
 }

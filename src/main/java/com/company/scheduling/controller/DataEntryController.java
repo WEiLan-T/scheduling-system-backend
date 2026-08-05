@@ -2,23 +2,43 @@ package com.company.scheduling.controller;
 
 import com.company.scheduling.domain.*;
 import com.company.scheduling.dto.*;
+import com.company.scheduling.service.CoexImportService;
 import com.company.scheduling.service.DataEntryService;
+import com.company.scheduling.service.DataExportService;
+import com.company.scheduling.service.InventoryImportService;
+import com.company.scheduling.service.WeavingImportService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.security.Principal;
+import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/workshops/integration")
 public class DataEntryController {
 
     private final DataEntryService dataEntryService;
+    private final WeavingImportService weavingImportService;
+    private final CoexImportService coexImportService;
+    private final InventoryImportService inventoryImportService;
+    private final DataExportService dataExportService;
 
-    public DataEntryController(DataEntryService dataEntryService) {
+    public DataEntryController(DataEntryService dataEntryService,
+                               WeavingImportService weavingImportService,
+                               CoexImportService coexImportService,
+                               InventoryImportService inventoryImportService,
+                               DataExportService dataExportService) {
         this.dataEntryService = dataEntryService;
+        this.weavingImportService = weavingImportService;
+        this.coexImportService = coexImportService;
+        this.inventoryImportService = inventoryImportService;
+        this.dataExportService = dataExportService;
     }
 
     // ================== 🧶 织造执行层 ==================
@@ -36,7 +56,7 @@ public class DataEntryController {
 
     @DeleteMapping("/weaving/logs/{id}")
     @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<String> deleteWeavingLog(@PathVariable Integer id, Principal principal) {
+    public ResponseEntity<String> deleteWeavingLog(@PathVariable Long id, Principal principal) {
         return ResponseEntity.ok(dataEntryService.deleteWeavingLog(id, principal.getName()));
     }
 
@@ -55,42 +75,101 @@ public class DataEntryController {
 
     @DeleteMapping("/coextrusion/logs/{id}")
     @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<String> deleteCoexLog(@PathVariable Integer id, Principal principal) {
+    public ResponseEntity<String> deleteCoexLog(@PathVariable Long id, Principal principal) {
         return ResponseEntity.ok(dataEntryService.deleteCoexLog(id, principal.getName()));
     }
 
     // ================== 🧶 织造车间 Excel 交互 ==================
     @PostMapping("/weaving/import")
     @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<String> importWeaving(@RequestParam("file") MultipartFile file, Principal principal) throws Exception {
-        return ResponseEntity.ok(dataEntryService.importWeavingExcel(file, principal.getName()));
+    public ResponseEntity<ImportResult> importWeaving(@RequestParam("file") MultipartFile file) {
+        ImportResult result = weavingImportService.importWeavingExcel(file);
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/weaving/export")
     @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
-    public ResponseEntity<byte[]> exportWeaving() throws Exception {
-        byte[] bytes = dataEntryService.exportWeavingToExcel();
-        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
-        headers.setContentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
-        headers.setContentDispositionFormData("attachment", "Weaving_Daily_Logs.xlsx");
-        return new ResponseEntity<>(bytes, headers, org.springframework.http.HttpStatus.OK);
+    public ResponseEntity<byte[]> exportWeaving() {
+        byte[] data = dataExportService.exportWeavingToExcel();
+        return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=weaving_export.xlsx")
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(data);
     }
 
     // ================== 🗜️ 共挤车间 Excel 交互 ==================
     @PostMapping("/coextrusion/import")
     @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<String> importCoex(@RequestParam("file") MultipartFile file, Principal principal) throws Exception {
-        return ResponseEntity.ok(dataEntryService.importCoexExcel(file, principal.getName()));
+    public ResponseEntity<ImportResult> importCoex(@RequestParam("file") MultipartFile file) {
+        ImportResult result = coexImportService.importCoexExcel(file);
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/coextrusion/export")
     @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
-    public ResponseEntity<byte[]> exportCoex() throws Exception {
-        byte[] bytes = dataEntryService.exportCoexToExcel();
-        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
-        headers.setContentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
-        headers.setContentDispositionFormData("attachment", "Coextrusion_Daily_Logs.xlsx");
-        return new ResponseEntity<>(bytes, headers, org.springframework.http.HttpStatus.OK);
+    public ResponseEntity<byte[]> exportCoex() {
+        byte[] data = dataExportService.exportCoexToExcel();
+        return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=coex_export.xlsx")
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(data);
+    }
+
+    // ================== 📦 库存 Excel 导入与核对 ==================
+    @PostMapping("/inventory/import")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<ImportResult> importInventory(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "snapshotDate", required = false) String snapshotDateStr) {
+        // snapshotDate格式: yyyy-MM-dd，如"2026-07-31"；不传则默认当前日期
+        LocalDate snapshotDate = (snapshotDateStr != null && !snapshotDateStr.isEmpty())
+                ? LocalDate.parse(snapshotDateStr)
+                : LocalDate.now();
+        ImportResult result = inventoryImportService.importInventoryExcel(file, snapshotDate);
+        return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/inventory/export")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<byte[]> exportInventory(
+            @RequestParam(value = "snapshotDate", required = false) String snapshotDateStr) {
+        // null表示导出最新快照
+        LocalDate snapshotDate = (snapshotDateStr != null && !snapshotDateStr.isEmpty())
+                ? LocalDate.parse(snapshotDateStr)
+                : null;
+        byte[] data = dataExportService.exportInventoryWithReconciliation(snapshotDate);
+        return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=inventory_reconciliation.xlsx")
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(data);
+    }
+
+    @GetMapping("/inventory/reconciliation")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<List<InventoryReconciliationDTO>> getReconciliationReport(
+            @RequestParam(value = "snapshotDate", required = false) String snapshotDateStr) {
+        LocalDate snapshotDate = (snapshotDateStr != null && !snapshotDateStr.isEmpty())
+                ? LocalDate.parse(snapshotDateStr)
+                : null;
+        List<InventoryReconciliationDTO> report = inventoryImportService.getReconciliationReport(snapshotDate);
+        return ResponseEntity.ok(report);
+    }
+
+    @PostMapping("/inventory/reconciliation/confirm/{id}")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<Map<String, String>> confirmReconciliation(@PathVariable Long id) {
+        inventoryImportService.confirmReconciliation(id);
+        return ResponseEntity.ok(Map.of("message", "核对确认成功"));
+    }
+
+    // ================== 🔍 数据质量重检（B级数据） ==================
+    @PostMapping("/data-quality/recheck")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
+    public ResponseEntity<Map<String, Object>> recheckGradeB() {
+        // 触发织造B级数据重新检查
+        Map<String, Object> result = new HashMap<>();
+        result.put("weaving", weavingImportService.recheckGradeBRecords());
+        return ResponseEntity.ok(result);
     }
 
     // ================== 📦 库存与调账 ==================
@@ -114,7 +193,7 @@ public class DataEntryController {
 
     @DeleteMapping("/inventory/{id}")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<String> deleteInventory(@PathVariable Integer id) {
+    public ResponseEntity<String> deleteInventory(@PathVariable Long id) {
         return ResponseEntity.ok(dataEntryService.deleteInventory(id));
     }
     @GetMapping("/weaving/machines")

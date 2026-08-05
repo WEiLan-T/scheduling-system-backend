@@ -13,4 +13,7 @@ public interface ProductionOrderRepo extends JpaRepository<ProductionOrder, Inte
 
     // 🌟 新增：联合校验去重接口
     boolean existsByOrderIdAndFinishedPartNumber(String orderId, String finishedPartNumber);
+
+    // 🌟 新增：批量查询订单
+    List<ProductionOrder> findByOrderIdIn(List<String> orderIds);
 }

@@ -6,6 +6,7 @@ spring:
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
+      # update: 仅根据实体增量更新表结构，绝不清空数据（create 会在每次启动时删库，禁用！）
       ddl-auto: update
     show-sql: true
     properties:
@@ -14,3 +15,12 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 server:
   port: 8080
+  error:
+    include-message: always
+    include-binding-errors: always
+
+python:
+  executable:
+    path: python
+  script:
+    path: scripts/data_cleaner.py

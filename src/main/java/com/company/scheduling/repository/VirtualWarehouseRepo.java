@@ -2,22 +2,35 @@ package com.company.scheduling.repository;
 
 import com.company.scheduling.domain.VirtualWarehouse;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import java.time.LocalDate;
 import java.util.List;
-import java.util.Optional;
 
 @Repository
-public interface VirtualWarehouseRepo extends JpaRepository<VirtualWarehouse, Integer> {
+public interface VirtualWarehouseRepo extends JpaRepository<VirtualWarehouse, Long> {
 
-    // 查找库存时必须同时定位【型号 + 编号】，实现精准多退少补和合并
-    Optional<VirtualWarehouse> findByTapePartNumberAndTapeNumber(String tapePartNumber, String tapeNumber);
+    // 按唯一键组合查询（零件号+带坯编号+快照日期）
+    List<VirtualWarehouse> findByPartNumberAndTapeCodeAndSnapshotDate(String partNumber, String tapeCode, LocalDate snapshotDate);
 
-    List<VirtualWarehouse> findByTapePartNumberContainingIgnoreCase(String keyword);
+    // 查询最新一期快照的全部库存记录
+    @Query("SELECT v FROM VirtualWarehouse v WHERE v.snapshotDate = (SELECT MAX(v2.snapshotDate) FROM VirtualWarehouse v2)")
+    List<VirtualWarehouse> findLatestSnapshot();
 
-    List<VirtualWarehouse> findByFinishedPartNumber(String finishedPartNumber);
+    // 查询指定快照日期的全部库存记录
+    List<VirtualWarehouse> findBySnapshotDate(LocalDate snapshotDate);
 
-    // 👇 新增此方法：兜底查询时，如果存在多个批次，只取第一条以防止抛出 NonUniqueResultException
-    Optional<VirtualWarehouse> findFirstByTapePartNumber(String tapePartNumber);
-    //新增：通过带坯物理编号反查库存，用于共挤车间自动带出型号
-    Optional<VirtualWarehouse> findFirstByTapeNumber(String tapeNumber);
+    // 查询某(零件号+带坯编号)的历史快照记录（按快照日期倒序）
+    List<VirtualWarehouse> findByPartNumberAndTapeCodeOrderBySnapshotDateDesc(String partNumber, String tapeCode);
+
+    // ================ 兼容方法（供排产引擎调用，映射到新字段） ================
+
+    /**
+     * 兼容旧接口：按成品零件号查询库存（旧方法名保留，查询映射到新字段partNumber）
+     * 返回最新一期快照中匹配的记录，避免跨快照重复累计
+     */
+    @Query("SELECT v FROM VirtualWarehouse v WHERE v.partNumber = :partNumber " +
+            "AND v.snapshotDate = (SELECT MAX(v2.snapshotDate) FROM VirtualWarehouse v2)")
+    List<VirtualWarehouse> findByFinishedPartNumber(@Param("partNumber") String partNumber);
 }

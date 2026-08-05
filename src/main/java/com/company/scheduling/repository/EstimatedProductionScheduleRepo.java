@@ -24,6 +24,12 @@ public interface EstimatedProductionScheduleRepo extends JpaRepository<Estimated
 
     List<EstimatedProductionSchedule> findByCoexLineIdAndCoexEndDateAfter(String lineId, LocalDateTime after);
 
+    // 🌟 新增：批量查询所有未来织造完工记录
+    List<EstimatedProductionSchedule> findByWeavingEndDateAfter(LocalDateTime after);
+
+    // 🌟 新增：批量查询所有未来共挤完工记录
+    List<EstimatedProductionSchedule> findByCoexEndDateAfter(LocalDateTime after);
+
     List<EstimatedProductionSchedule> findByOrderId(String orderId);
 
     @Query("SELECT e.orderId, MIN(CASE WHEN e.weavingStartDate IS NOT NULL THEN e.weavingStartDate ELSE e.coexStartDate END), MAX(e.coexEndDate) FROM EstimatedProductionSchedule e GROUP BY e.orderId")

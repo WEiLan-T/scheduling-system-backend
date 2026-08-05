@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>企业级智能排产调度系统</title>
+    <title>智能排产调度系统</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus/dist/index.css" />
     <style>
         [v-cloak] { display: none !important; }
@@ -81,6 +81,7 @@
                     <el-menu-item-group title="APS 智能计划">
                         <el-menu-item index="order"><span>🛒 订单统一下达</span></el-menu-item>
                         <el-menu-item index="process"><span>⚙️ 工艺路线配置</span></el-menu-item>
+                        <el-menu-item index="inquiry"><span>🔮 询单预估</span></el-menu-item>
                         <el-menu-item index="estimation"><span>📊 排产指挥大盘</span></el-menu-item>
                     </el-menu-item-group>
                 </el-menu>
@@ -163,6 +164,7 @@
                                     <el-button size="small" type="info" plain @click="exportWeavingExcel">导出 Excel</el-button>
                                     <input type="file" ref="weavingFileRef" style="display: none" @change="handleWeavingImport" accept=".xlsx, .xls"/>
                                     <el-button size="small" type="warning" plain @click="$refs.weavingFileRef.click()">导入 Excel</el-button>
+                                    <el-button size="small" type="success" plain @click="recheckGradeB">🔍 B级数据重检</el-button>
                                 </div>
                             </div>
                         </template>
@@ -204,24 +206,46 @@
                         </el-form>
                     </el-card>
 
+                    <!-- 织造导入结果摘要 -->
+                    <div v-if="importResult && lastImportSource === 'weaving'" style="margin-top: 20px;">
+                        <el-alert :title="importResult.message || '导入完成'" :type="importResult.rejectedCount > 0 ? 'warning' : 'success'" show-icon :closable="false">
+                            <template #default>
+                                <p style="margin: 4px 0;">总计: {{ importResult.totalRows }} | 新增: {{ importResult.insertedCount }} | 跳过(已存在): {{ importResult.skippedCount }} | 拒绝: {{ importResult.rejectedCount }}
+                                    <span v-if="importResult.importBatchId" style="color:#64748b;">（批次: {{ importResult.importBatchId }}）</span></p>
+                                <p v-if="importResult.qualityReport && importResult.qualityReport.gradeBCount > 0" style="margin: 4px 0; color: #e6a23c;">
+                                    ⚠️ B级数据({{ importResult.qualityReport.gradeBCount }}条): {{ (importResult.qualityReport.gradeBDetails || []).join('; ') }}
+                                </p>
+                                <p v-if="importResult.qualityReport && importResult.qualityReport.gradeCCount > 0" style="margin: 4px 0; color: #f56c6c;">
+                                    ❌ C级拒绝({{ importResult.qualityReport.gradeCCount }}条): {{ (importResult.qualityReport.gradeCReasons || []).join('; ') }}
+                                </p>
+                            </template>
+                        </el-alert>
+                    </div>
+
                     <el-card shadow="hover" style="margin-top: 20px;">
                         <div class="filter-bar">
                             <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 数据台账检视：</b>
-                            <el-input v-model="weavingSearch.tapePartNumber" placeholder="检索带坯零件号..." clearable style="width: 180px;"></el-input>
-                            <el-input v-model="weavingSearch.tapeNumber" placeholder="检索带坯编号..." clearable style="width: 180px;"></el-input>
-                            <el-input v-model="weavingSearch.machineId" placeholder="检索生产机台号..." clearable style="width: 180px;"></el-input>
+                            <el-input v-model="weavingSearch.partNumber" placeholder="检索零件号..." clearable style="width: 180px;"></el-input>
+                            <el-input v-model="weavingSearch.tapeCode" placeholder="检索带坯编号..." clearable style="width: 180px;"></el-input>
+                            <el-input v-model="weavingSearch.machineNo" placeholder="检索生产机台号..." clearable style="width: 180px;"></el-input>
                             <el-tag type="info" style="margin-left:auto">共 {{ weavingTotal }} 条</el-tag>
                         </div>
                         <el-table :data="paginatedWeavingLogs" border stripe size="small" v-loading="loading" style="width: 100%">
                             <el-table-column prop="entryDate" label="账期" width="95" fixed></el-table-column>
-                            <el-table-column prop="tapePartNumber" label="零件号" width="100" fixed></el-table-column>
-                            <el-table-column prop="tapeNumber" label="带坯卷号" width="95"></el-table-column>
-                            <el-table-column prop="machineId" label="机台" width="60" align="center"></el-table-column>
+                            <el-table-column prop="partNumber" label="零件号" width="100" fixed></el-table-column>
+                            <el-table-column prop="tapeCode" label="带坯编号" width="95"></el-table-column>
+                            <el-table-column prop="machineNo" label="机台" width="60" align="center"></el-table-column>
                             <el-table-column prop="modelSpec" label="型号规格" width="130" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="warpSpec" label="经线" width="100" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="weftSpec" label="纬线" width="120" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="shift" label="班次" width="60" align="center"><template #default="scope"><el-tag :type="scope.row.shift === '白' ? 'warning' : 'info'" size="small">{{ scope.row.shift }}班</el-tag></template></el-table-column>
-                            <el-table-column prop="capacityPerDay" label="产量(米)" width="90"><template #default="scope"><b style="color: #16a34a;">+ {{ scope.row.capacityPerDay }}</b></template></el-table-column>
+                            <el-table-column prop="warpThread" label="经线" width="100" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="weftThread" label="纬线" width="120" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="shiftType" label="班次" width="60" align="center"><template #default="scope"><el-tag :type="scope.row.shiftType === '白' ? 'warning' : 'info'" size="small">{{ scope.row.shiftType }}班</el-tag></template></el-table-column>
+                            <el-table-column prop="workerName" label="姓名" width="80" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="shiftOutput" label="产量(米)" width="90"><template #default="scope"><b style="color: #16a34a;">+ {{ scope.row.shiftOutput }}</b></template></el-table-column>
+                            <el-table-column prop="standardCapacity" label="标准产能" width="90"></el-table-column>
+                            <el-table-column prop="standardHours" label="标准小时" width="90"></el-table-column>
+                            <el-table-column prop="standardHourCapacity" label="小时产能" width="90"></el-table-column>
+                            <el-table-column prop="performanceHours" label="绩效工时" width="90"></el-table-column>
+                            <el-table-column prop="dataQualityFlag" label="质量" width="70" align="center"><template #default="scope"><el-tag :type="scope.row.dataQualityFlag === 'A' ? 'success' : (scope.row.dataQualityFlag === 'B' ? 'warning' : 'danger')" size="small">{{ scope.row.dataQualityFlag }}</el-tag></template></el-table-column>
                             <el-table-column label="管理" width="110" align="center" fixed="right">
                                 <template #default="scope">
                                     <el-button type="primary" size="small" plain @click="openEditWeaving(scope.row)" style="padding: 4px 8px;">修</el-button>
@@ -281,20 +305,44 @@
                         </el-form>
                     </el-card>
 
+                    <!-- 共挤导入结果摘要 -->
+                    <div v-if="importResult && lastImportSource === 'coex'" style="margin-top: 20px;">
+                        <el-alert :title="importResult.message || '导入完成'" :type="importResult.rejectedCount > 0 ? 'warning' : 'success'" show-icon :closable="false">
+                            <template #default>
+                                <p style="margin: 4px 0;">总计: {{ importResult.totalRows }} | 新增: {{ importResult.insertedCount }} | 跳过(已存在): {{ importResult.skippedCount }} | 拒绝: {{ importResult.rejectedCount }}
+                                    <span v-if="importResult.importBatchId" style="color:#64748b;">（批次: {{ importResult.importBatchId }}）</span></p>
+                                <p v-if="coexImportYear" style="margin: 4px 0; color: #409eff;">📅 从文件名提取年份: {{ coexImportYear }}</p>
+                                <p v-if="importResult.qualityReport && importResult.qualityReport.gradeBCount > 0" style="margin: 4px 0; color: #e6a23c;">
+                                    ⚠️ B级数据({{ importResult.qualityReport.gradeBCount }}条): {{ (importResult.qualityReport.gradeBDetails || []).join('; ') }}
+                                </p>
+                                <p v-if="importResult.qualityReport && importResult.qualityReport.gradeCCount > 0" style="margin: 4px 0; color: #f56c6c;">
+                                    ❌ C级拒绝({{ importResult.qualityReport.gradeCCount }}条): {{ (importResult.qualityReport.gradeCReasons || []).join('; ') }}
+                                </p>
+                            </template>
+                        </el-alert>
+                    </div>
+
                     <el-card shadow="hover" style="margin-top: 20px;">
                         <div class="filter-bar">
                             <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 数据台账检视：</b>
-                            <el-input v-model="coexSearch.orderNumber" placeholder="筛选: 订单号" clearable style="width: 140px;"></el-input>
-                            <el-input v-model="coexSearch.finishedPartNumber" placeholder="筛选: 成品零件号" clearable style="width: 150px;"></el-input>
+                            <el-input v-model="coexSearch.productType" placeholder="筛选: 产品类型" clearable style="width: 140px;"></el-input>
+                            <el-input v-model="coexSearch.productModel" placeholder="筛选: 产品型号" clearable style="width: 150px;"></el-input>
+                            <el-input v-model="coexSearch.machineNo" placeholder="筛选: 机台号" clearable style="width: 130px;"></el-input>
                             <el-tag type="info" style="margin-left:auto">共 {{ coexTotal }} 条</el-tag>
                         </div>
                         <el-table :data="paginatedCoexLogs" border stripe size="small" v-loading="loading">
-                            <el-table-column prop="entryDate" label="账期" width="90"></el-table-column>
-                            <el-table-column prop="orderNumber" label="订单号" width="90"></el-table-column>
-                            <el-table-column prop="lineId" label="线号" width="60" align="center"></el-table-column>
-                            <el-table-column prop="finishedPartNumber" label="管带" width="90"></el-table-column>
-                            <el-table-column prop="capacityPerDay" label="产出(m)"><template #default="scope"><el-tag type="success">{{ scope.row.capacityPerDay }}</el-tag></template></el-table-column>
-                            <el-table-column prop="tapeDemandQty" label="消耗(m)"><template #default="scope"><el-tag type="danger">- {{ scope.row.tapeDemandQty }}</el-tag></template></el-table-column>
+                            <el-table-column prop="logDate" label="账期" width="90"></el-table-column>
+                            <el-table-column prop="machineNo" label="机台号" width="70" align="center"></el-table-column>
+                            <el-table-column prop="productType" label="产品类型" width="90"></el-table-column>
+                            <el-table-column prop="productModel" label="产品型号" width="110" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="color" label="颜色" width="70"></el-table-column>
+                            <el-table-column prop="mainMaterial" label="主材" width="100" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="finishedQty" label="成品数量(根)" width="100" align="center"></el-table-column>
+                            <el-table-column prop="weightKg" label="重量(Kg)" width="90"></el-table-column>
+                            <el-table-column prop="capacityMeters" label="产能(米)"><template #default="scope"><el-tag type="success">{{ scope.row.capacityMeters }}</el-tag></template></el-table-column>
+                            <el-table-column prop="leakageKg" label="漏胶(Kg)" width="90"></el-table-column>
+                            <el-table-column prop="sourceFileYear" label="年份" width="70" align="center"></el-table-column>
+                            <el-table-column prop="dataQualityFlag" label="质量" width="70" align="center"><template #default="scope"><el-tag :type="scope.row.dataQualityFlag === 'A' ? 'success' : (scope.row.dataQualityFlag === 'B' ? 'warning' : 'danger')" size="small">{{ scope.row.dataQualityFlag }}</el-tag></template></el-table-column>
                             <el-table-column label="管理" width="90" align="center" fixed="right">
                                 <template #default="scope">
                                     <el-button type="primary" size="small" plain @click="openEditCoex(scope.row)" style="padding: 5px;">修</el-button>
@@ -322,6 +370,61 @@
                             <el-button type="success" @click="openAddInv">手工建档入库</el-button>
                         </div>
 
+                        <!-- 📥 库存Excel导入与核对报表导出 -->
+                        <div class="filter-bar" style="margin-bottom: 20px;">
+                            <b style="color: #475569; font-size: 14px; margin-right: 5px;">📥 库存Excel导入：</b>
+                            <el-date-picker v-model="inventorySnapshotDate" type="date" placeholder="快照日期(默认当天)" value-format="YYYY-MM-DD" style="width: 180px;"></el-date-picker>
+                            <input type="file" ref="invFileRef" style="display: none" @change="handleInventoryFileChange" accept=".xlsx, .xls"/>
+                            <el-button type="primary" size="small" plain @click="$refs.invFileRef.click()">选择Excel文件</el-button>
+                            <el-tag v-if="inventoryFile" type="success" size="small">{{ inventoryFile.name }}</el-tag>
+                            <el-button type="success" size="small" @click="importInventory" :loading="importLoading">导入库存</el-button>
+                            <el-button type="warning" size="small" @click="exportInventory">导出核对报表</el-button>
+                            <el-button type="info" size="small" plain @click="loadReconciliationReport" :loading="reconciliationLoading">查看差值报表</el-button>
+                        </div>
+
+                        <!-- 库存导入结果摘要 -->
+                        <div v-if="importResult && lastImportSource === 'inventory'" style="margin-bottom: 20px;">
+                            <el-alert :title="importResult.message || '导入完成'" :type="importResult.rejectedCount > 0 ? 'warning' : 'success'" show-icon :closable="false">
+                                <template #default>
+                                    <p style="margin: 4px 0;">总计: {{ importResult.totalRows }} | 新增: {{ importResult.insertedCount }} | 跳过(已存在): {{ importResult.skippedCount }} | 拒绝: {{ importResult.rejectedCount }}
+                                        <span v-if="importResult.importBatchId" style="color:#64748b;">（批次: {{ importResult.importBatchId }}）</span></p>
+                                    <p v-if="importResult.qualityReport && importResult.qualityReport.gradeBCount > 0" style="margin: 4px 0; color: #e6a23c;">
+                                        ⚠️ B级数据({{ importResult.qualityReport.gradeBCount }}条): {{ (importResult.qualityReport.gradeBDetails || []).join('; ') }}
+                                    </p>
+                                    <p v-if="importResult.qualityReport && importResult.qualityReport.gradeCCount > 0" style="margin: 4px 0; color: #f56c6c;">
+                                        ❌ C级拒绝({{ importResult.qualityReport.gradeCCount }}条): {{ (importResult.qualityReport.gradeCReasons || []).join('; ') }}
+                                    </p>
+                                </template>
+                            </el-alert>
+                        </div>
+
+                        <!-- 📊 库存核对差值报表 -->
+                        <div v-if="reconciliationData.length > 0" style="margin-bottom: 20px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 15px;">
+                            <h4 style="margin: 0 0 12px 0; color: #c2410c;">📊 库存核对差值报表</h4>
+                            <el-table :data="reconciliationData" border stripe size="small" max-height="400" v-loading="reconciliationLoading">
+                                <el-table-column prop="partNumber" label="零件号" width="120"></el-table-column>
+                                <el-table-column prop="tapeCode" label="带坯编号" width="100"></el-table-column>
+                                <el-table-column prop="modelSpec" label="型号规格" width="140" show-overflow-tooltip></el-table-column>
+                                <el-table-column prop="excelValue" label="Excel值" width="100"></el-table-column>
+                                <el-table-column prop="dbCalculatedValue" label="系统计算值" width="100"></el-table-column>
+                                <el-table-column prop="difference" label="差值" width="90">
+                                    <template #default="{row}">
+                                        <b :style="{color: row.difference > 0 ? '#16a34a' : row.difference < 0 ? '#ef4444' : ''}">{{ row.difference }}</b>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="status" label="状态" width="90">
+                                    <template #default="{row}">
+                                        <el-tag :type="row.status === 'ACCEPTED' ? 'success' : 'warning'" size="small">{{ row.status === 'ACCEPTED' ? '已确认' : '待核对' }}</el-tag>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="操作" width="90" align="center">
+                                    <template #default="{row}">
+                                        <el-button v-if="row.status !== 'ACCEPTED'" size="small" type="primary" @click="confirmReconciliation(row)">确认</el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </div>
+
                         <el-table :data="paginatedInventoryList" border stripe v-loading="invLoading" style="width: 100%">
                             <el-table-column type="expand">
                                 <template #default="props">
@@ -329,11 +432,15 @@
                                         <b style="color: #475569; font-size: 13px;">包含的物理批次/卷号明细：</b>
                                         <el-table :data="props.row.batches" border size="small" style="margin-top: 10px; width: 95%">
                                             <el-table-column prop="id" label="系统ID" width="70" align="center"></el-table-column>
-                                            <el-table-column prop="tapeNumber" label="物理带坯编号">
-                                                <template #default="scope"><b># {{ scope.row.tapeNumber }}</b></template>
+                                            <el-table-column prop="tapeCode" label="带坯编号" width="110">
+                                                <template #default="scope"><b># {{ scope.row.tapeCode }}</b></template>
                                             </el-table-column>
-                                            <el-table-column prop="currentStockMeters" label="此卷库存(米)"></el-table-column>
-                                            <el-table-column prop="entryDate" label="最近更新" width="110"></el-table-column>
+                                            <el-table-column prop="stockMeters" label="此批库存(米)" width="110"></el-table-column>
+                                            <el-table-column prop="stockType" label="库存类型" width="90"></el-table-column>
+                                            <el-table-column prop="snapshotDate" label="快照日期" width="110"></el-table-column>
+                                            <el-table-column prop="reconcileStatus" label="核对状态" width="100">
+                                                <template #default="scope"><el-tag size="small" :type="scope.row.reconcileStatus === 'RECONCILED' ? 'success' : 'info'">{{ scope.row.reconcileStatus || 'PENDING' }}</el-tag></template>
+                                            </el-table-column>
                                             <el-table-column label="操作" width="110" align="center">
                                                 <template #default="scope">
                                                     <el-button type="primary" size="small" plain @click="openEditInv(scope.row)">修</el-button>
@@ -345,15 +452,15 @@
                                 </template>
                             </el-table-column>
 
-                            <el-table-column prop="tapePartNumber" label="带坯零件号(总)" width="150">
-                                <template #default="scope"><b>{{ scope.row.tapePartNumber }}</b></template>
+                            <el-table-column prop="partNumber" label="带坯零件号(总)" width="150">
+                                <template #default="scope"><b>{{ scope.row.partNumber }}</b></template>
                             </el-table-column>
-                            <el-table-column label="包含卷数" width="100" align="center">
+                            <el-table-column label="包含批次" width="100" align="center">
                                 <template #default="scope">
-                                    <el-tag type="info" size="small">{{ scope.row.batches.length }} 卷</el-tag>
+                                    <el-tag type="info" size="small">{{ scope.row.batches.length }} 批</el-tag>
                                 </template>
                             </el-table-column>
-                            <el-table-column prop="finishedPartNumber" label="绑定成品BOM"></el-table-column>
+                            <el-table-column prop="modelSpec" label="型号规格" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="totalStockMeters" label="该型号总可用库存(米)">
                                 <template #default="scope">
                                     <el-tag :type="scope.row.totalStockMeters > 2000 ? 'success' : 'warning'" effect="dark">
@@ -361,6 +468,7 @@
                                     </el-tag>
                                 </template>
                             </el-table-column>
+                            <el-table-column prop="snapshotDate" label="最新快照日期" width="120" align="center"></el-table-column>
                         </el-table>
 
                         <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
@@ -369,11 +477,12 @@
 
                         <el-dialog :title="invForm.id ? '🛠️ 修正库存档案' : '📦 建立新库存档案'" v-model="invDialogVisible" width="500px">
                             <el-form :model="invForm" label-width="110px">
-                                <el-form-item label="账期"><el-date-picker v-model="invForm.entryDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item>
-                                <el-form-item label="带坯型号"><el-input v-model="invForm.tapePartNumber"></el-input></el-form-item>
-                                <el-form-item label="带坯物理编号"><el-input v-model="invForm.tapeNumber" placeholder="不填默认为 DEFAULT"></el-input></el-form-item>
-                                <el-form-item label="对应成品BOM"><el-input v-model="invForm.finishedPartNumber"></el-input></el-form-item>
-                                <el-form-item label="当前库存(米)"><el-input-number v-model="invForm.currentStockMeters" style="width:100%"></el-input-number></el-form-item>
+                                <el-form-item label="带坯零件号"><el-input v-model="invForm.partNumber"></el-input></el-form-item>
+                                <el-form-item label="带坯编号"><el-input v-model="invForm.tapeCode" placeholder="不填默认为 DEFAULT"></el-input></el-form-item>
+                                <el-form-item label="型号规格"><el-input v-model="invForm.modelSpec"></el-input></el-form-item>
+                                <el-form-item label="当前库存(米)"><el-input-number v-model="invForm.stockMeters" style="width:100%"></el-input-number></el-form-item>
+                                <el-form-item label="快照日期"><el-date-picker v-model="invForm.snapshotDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item>
+                                <el-form-item label="库存类型"><el-select v-model="invForm.stockType" style="width:100%"><el-option label="库存" value="库存"></el-option><el-option label="订单" value="订单"></el-option><el-option label="滞留" value="滞留"></el-option></el-select></el-form-item>
                             </el-form>
                             <template #footer><el-button @click="invDialogVisible = false">取消</el-button><el-button type="primary" @click="saveInv" :loading="invSaveLoading">确认落库</el-button></template>
                         </el-dialog>
@@ -465,7 +574,7 @@
 
                         <div style="margin-top: 25px; display: flex; gap: 15px;">
                             <el-button type="success" size="large" @click="submitOrder" :loading="loading">{{ isOrderEditMode ? '💾 保存并覆盖订单库' : '📥 立即正式下达生产订单' }}</el-button>
-                            <el-button type="warning" size="large" @click="simulateOrder" :loading="loading" plain>🔮 模拟排产推演 (不入库)</el-button>
+                            <el-button type="warning" size="large" @click="activeMenu = 'inquiry'" plain>🔮 前往询单预估</el-button>
                             <el-button v-if="isOrderEditMode" size="large" @click="resetOrderForm">取消修改</el-button>
                         </div>
                     </el-card>
@@ -596,47 +705,75 @@
                             </div>
 
                             <b style="color: #475569; display: block; margin-bottom: 10px;">👇 在下方下拉框中选定机台，上方甘特图将瞬间重排映射轨道：</b>
-                            <el-table :data="estResult.details" border size="small" style="width: 100%">
-                                <el-table-column label="任务核心对象" width="160">
-                                    <template #default="scope">
-                                        <b>管带: {{ scope.row.finishedPartNumber }}</b><br/>
-                                        <span style="color: #64748b; font-size:11px;">带坯: {{ scope.row.tapePartNumber }}</span>
-                                    </template>
-                                </el-table-column>
-                                <el-table-column label="🧶 织造机台指派" width="200">
-                                    <template #default="scope">
-                                        <div v-if="scope.row.weavingStart">
-                                            <el-select v-model="scope.row.plannedMachine" size="small" placeholder="放入织造池..." style="width:100%" clearable>
-                                                <el-option v-for="m in machineList" :key="m.machineId" :label="'分配至: ' + m.machineId + ' 机器'" :value="m.machineId"></el-option>
+
+                            <el-card shadow="never" style="margin-bottom: 15px; border-left: 4px solid #0284c7;">
+                                <template #header><b style="color: #0284c7;">🧶 织造机台调度</b></template>
+                                <el-table :data="weavingScheduleDetails" border size="small">
+                                    <el-table-column label="成品/带坯" width="160">
+                                        <template #default="scope">
+                                            <b>{{ scope.row.finishedPartNumber }}</b><br/>
+                                            <span style="font-size:11px; color:#64748b;">{{ scope.row.tapePartNumber }}</span>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="指派机台" width="220">
+                                        <template #default="scope">
+                                            <el-select v-if="scope.row.weavingStart" v-model="scope.row.plannedMachine" size="small" placeholder="选择机台..." style="width:100%" clearable @change="debouncedApplyAdjustments">
+                                                <el-option v-for="m in machineList" :key="m.machineId" :label="'机台' + m.machineId + (m.caliberLimit ? ' [' + m.caliberLimit + ']' : '')" :value="m.machineId"></el-option>
                                             </el-select>
-                                        </div>
-                                        <el-tag v-else type="success" effect="dark" size="small">现有库存满足，免织造直上</el-tag>
-                                    </template>
-                                </el-table-column>
-                                <el-table-column label="🗜️ 共挤产线指派" width="200">
-                                    <template #default="scope">
-                                        <el-select v-model="scope.row.plannedLine" size="small" placeholder="放入共挤池..." style="width:100%" clearable>
-                                            <el-option v-for="l in lineList" :key="l.lineId" :label="'分配至: ' + l.lineId + ' 产线'" :value="l.lineId"></el-option>
-                                        </el-select>
-                                    </template>
-                                </el-table-column>
-                                <el-table-column label="手动织造产能(m/天)" width="160">
-                                    <template #default="scope">
-                                        <el-input-number v-model="scope.row.manualWeavingCap" :min="0" size="small" placeholder="算法自动" style="width: 130px;" :controls="false"></el-input-number>
-                                    </template>
-                                </el-table-column>
-                                <el-table-column label="手动共挤产能(m/天)" width="160">
-                                    <template #default="scope">
-                                        <el-input-number v-model="scope.row.manualCoexCap" :min="0" size="small" placeholder="算法自动" style="width: 130px;" :controls="false"></el-input-number>
-                                    </template>
-                                </el-table-column>
-                                <el-table-column label="工艺模型约束 (只读)" show-overflow-tooltip>
-                                    <template #default="scope">
-                                        经纬规格：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>
-                                        预估目标量：需织 {{ scope.row.tapeMetersNeed.toFixed(0) }}m | 需挤 {{ scope.row.finishedMeters.toFixed(0) }}m
-                                    </template>
-                                </el-table-column>
-                            </el-table>
+                                            <el-tag v-else type="success" size="small">库存满足，免织造</el-tag>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="织造机台数" width="130">
+                                        <template #default="scope">
+                                            <el-input-number v-model="scope.row.manualWeavingMachineCount" :min="1" size="small" style="width:100%;" :controls="true" @change="debouncedApplyAdjustments"></el-input-number>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="手动织造产能(m/天)" width="150">
+                                        <template #default="scope">
+                                            <el-input-number v-model="scope.row.manualWeavingCap" :min="0" size="small" placeholder="自动" style="width:100%" :controls="false"></el-input-number>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="工艺约束" show-overflow-tooltip>
+                                        <template #default="scope">
+                                            经纬：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>
+                                            需织 {{ scope.row.tapeMetersNeed?.toFixed(0) }} m
+                                        </template>
+                                    </el-table-column>
+                                </el-table>
+                            </el-card>
+
+                            <el-card shadow="never" style="margin-bottom: 15px; border-left: 4px solid #eab308;">
+                                <template #header><b style="color: #ca8a04;">🗜️ 共挤产线调度</b></template>
+                                <el-table :data="coexScheduleDetails" border size="small">
+                                    <el-table-column label="成品" width="160">
+                                        <template #default="scope">
+                                            <b>{{ scope.row.finishedPartNumber }}</b>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="指派产线" width="220">
+                                        <template #default="scope">
+                                            <el-select v-model="scope.row.plannedLine" size="small" placeholder="选择产线..." style="width:100%" clearable @change="debouncedApplyAdjustments">
+                                                <el-option v-for="l in lineList" :key="l.lineId" :label="'产线' + l.lineId + (l.caliberLimit ? ' [' + l.caliberLimit + ']' : '')" :value="l.lineId"></el-option>
+                                            </el-select>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="共挤产线数" width="130">
+                                        <template #default="scope">
+                                            <el-input-number v-model="scope.row.manualCoexLineCount" :min="1" size="small" style="width:100%;" :controls="true" @change="debouncedApplyAdjustments"></el-input-number>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="手动共挤产能(m/天)" width="150">
+                                        <template #default="scope">
+                                            <el-input-number v-model="scope.row.manualCoexCap" :min="0" size="small" placeholder="自动" style="width:100%" :controls="false"></el-input-number>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="工艺约束" show-overflow-tooltip>
+                                        <template #default="scope">
+                                            需挤 {{ scope.row.finishedMeters?.toFixed(0) }} m
+                                        </template>
+                                    </el-table-column>
+                                </el-table>
+                            </el-card>
                         </div>
                     </el-card>
 
@@ -652,6 +789,114 @@
                         <template #footer><el-button type="primary" @click="submitManualCapacity">录入并继续推进排产</el-button></template>
                     </el-dialog>
                 </div>
+
+                <div v-show="activeMenu === 'inquiry'">
+                    <el-card shadow="hover">
+                        <template #header>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <b style="font-size: 16px; color: #f59e0b;">🔮 询单预估 — 生产天数与排产规划性计算</b>
+                                <el-button size="small" plain @click="refreshCurrentPage">🔄 刷新</el-button>
+                            </div>
+                        </template>
+
+                        <!-- 输入表单 -->
+                        <div style="background: #f8fafc; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #e2e8f0;">
+                            <el-form :inline="true" :model="inquiryForm" label-width="100px">
+                                <el-form-item label="客户名称"><el-input v-model="inquiryForm.customerName" placeholder="可选"></el-input></el-form-item>
+                                <el-form-item label="拟生产天数"><el-input-number v-model="inquiryForm.plannedProductionDays" :min="1" :max="365" style="width: 140px;"></el-input-number></el-form-item>
+                                <el-form-item label="缓冲天数"><el-input-number v-model="inquiryForm.globalBufferDays" :min="0" style="width: 120px;"></el-input-number></el-form-item>
+                                <el-form-item label="织造提前(天)"><el-input-number v-model="inquiryForm.weavingAdvanceDays" :min="0" style="width: 120px;"></el-input-number></el-form-item>
+                                <el-form-item><el-button type="warning" @click="fetchInquiry" :loading="loading" icon="Search">开始预估计算</el-button></el-form-item>
+                            </el-form>
+                        </div>
+
+                        <!-- 产品明细表格 -->
+                        <div style="margin-bottom: 15px;"><el-button type="primary" plain size="small" @click="addInquiryItem">+ 添加产品明细</el-button></div>
+                        <el-table :data="inquiryForm.items" border stripe size="small" style="width: 100%; margin-bottom: 20px;">
+                            <el-table-column label="成品零件号" width="140"><template #default="scope"><el-input v-model="scope.row.finishedPartNumber" size="small" placeholder="如: 9D2002"></el-input></template></el-table-column>
+                            <el-table-column label="品名" width="120"><template #default="scope"><el-input v-model="scope.row.productName" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="规格型号" width="110"><template #default="scope"><el-input v-model="scope.row.modelSpec" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="单卷长(m)" width="100"><template #default="scope"><el-input-number v-model="scope.row.metersPerRoll" :min="0" size="small" style="width: 100%" :controls="false"></el-input-number></template></el-table-column>
+                            <el-table-column label="卷数" width="80"><template #default="scope"><el-input-number v-model="scope.row.rollCount" :min="0" size="small" style="width: 100%" :controls="false"></el-input-number></template></el-table-column>
+                            <el-table-column label="总米数" width="100"><template #default="scope"><el-input :value="(scope.row.metersPerRoll * scope.row.rollCount).toFixed(0)" size="small" readonly style="background:#f1f5f9;"></el-input></template></el-table-column>
+                            <el-table-column label="操作" width="60" align="center"><template #default="scope"><el-button type="danger" size="small" @click="removeInquiryItem(scope.$index)">删</el-button></template></el-table-column>
+                        </el-table>
+
+                        <!-- 询单结果 -->
+                        <div v-if="inquiryResult">
+                            <el-alert :title="`🎯 预估结果：拟生产 ${inquiryResult.plannedProductionDays} 天，推荐织造机台 ${inquiryResult.recommendedMachineCount} 台、共挤产线 ${inquiryResult.recommendedLineCount} 条，时间跨度: ${inquiryResult.overallStartDate?.replace('T',' ')} 至 ${inquiryResult.overallEndDate?.replace('T',' ')}`" type="warning" show-icon style="margin-bottom: 15px;"></el-alert>
+
+                            <!-- 甘特图 -->
+                            <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 25px;">
+                                <div style="display: flex; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 8px;">
+                                    <div style="width: 180px; flex-shrink: 0; font-weight: bold; color: #64748b;">排产节点轨道</div>
+                                    <div style="flex-grow: 1; position: relative; height: 25px;">
+                                        <div v-for="marker in inquiryGanttTimeline" :key="marker.left" :style="{ left: marker.left }"
+                                             style="position: absolute; top: 0; font-size: 11px; font-weight: bold; color: #94a3b8; transform: translateX(-50%); border-left: 1px dashed #cbd5e1; padding-left: 5px; height: 100%;">
+                                             {{ marker.label }}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div v-for="row in inquiryGanttRows" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 46px;">
+                                    <div style="width: 180px; flex-shrink: 0; font-weight: bold; font-size: 13px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px;">
+                                        {{ row.label }}
+                                    </div>
+                                    <div style="flex-grow: 1; position: relative; height: 100%; background: #f8fafc;">
+                                        <div v-for="task in row.tasks" :key="task.finishedPartNumber + task.typeStr"
+                                             :style="{ left: task.left, width: task.width, backgroundColor: task.color }"
+                                             style="position: absolute; height: 30px; top: 8px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 0 5px;">
+                                            <el-tooltip placement="top" effect="light">
+                                                <template #content>
+                                                    <div style="font-size: 13px; line-height: 1.6;">
+                                                        <b>【{{ task.typeStr }}】</b><br/>
+                                                        成品：{{ task.finishedPartNumber }}<br/>
+                                                        带坯：{{ task.tapePartNumber }}<br/>
+                                                        开始：{{ task.rawStart }}<br/>
+                                                        结束：{{ task.rawEnd }}<br/>
+                                                        机台/产线：{{ task.plannedMachine || task.plannedLine || '待指派' }}
+                                                    </div>
+                                                </template>
+                                                <span>{{ task.label }}</span>
+                                            </el-tooltip>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 资源调整表格 -->
+                            <el-table :data="inquiryResult.details" border size="small" style="width: 100%">
+                                <el-table-column label="成品/带坯" width="160">
+                                    <template #default="scope">
+                                        <b>{{ scope.row.finishedPartNumber }}</b><br/>
+                                        <span style="color: #64748b; font-size:11px;">{{ scope.row.tapePartNumber }}</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="🧶 织造机台指派" width="200">
+                                    <template #default="scope">
+                                        <el-select v-if="scope.row.weavingStart" v-model="scope.row.plannedMachine" size="small" placeholder="选择机台..." style="width:100%" clearable>
+                                            <el-option v-for="m in machineList" :key="m.machineId" :label="'机台' + m.machineId + (m.caliberLimit ? ' [' + m.caliberLimit + ']' : '')" :value="m.machineId"></el-option>
+                                        </el-select>
+                                        <el-tag v-else type="success" size="small">库存满足</el-tag>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="🗜️ 共挤产线指派" width="200">
+                                    <template #default="scope">
+                                        <el-select v-model="scope.row.plannedLine" size="small" placeholder="选择产线..." style="width:100%" clearable>
+                                            <el-option v-for="l in lineList" :key="l.lineId" :label="'产线' + l.lineId + (l.caliberLimit ? ' [' + l.caliberLimit + ']' : '')" :value="l.lineId"></el-option>
+                                        </el-select>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="工艺约束" show-overflow-tooltip>
+                                    <template #default="scope">
+                                        经纬：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>
+                                        需织 {{ scope.row.tapeMetersNeed?.toFixed(0) }} m | 需挤 {{ scope.row.finishedMeters?.toFixed(0) }} m
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </div>
+                    </el-card>
+                </div>
+
                 <div v-show="activeMenu === 'execution'">
                     <el-card shadow="hover">
                         <template #header>
