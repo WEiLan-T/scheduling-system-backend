@@ -20,23 +20,23 @@ public class InquiryCalculator {
 
     private final CapacityMatcher capacityMatcher;
     private final ProductProcessRepo processRepo;
-    private final WeavingDailyLogRepo weavingLogRepo;
-    private final CoexDailyLogRepo coexLogRepo;
     private final WeavingMachineStatusRepo weavingStatusRepo;
     private final CoexLineStatusRepo coexStatusRepo;
+    private final CapacityProvider capacityProvider;
+    private final TapeStockConsumer stockConsumer;
 
     public InquiryCalculator(CapacityMatcher capacityMatcher,
                              ProductProcessRepo processRepo,
-                             WeavingDailyLogRepo weavingLogRepo,
-                             CoexDailyLogRepo coexLogRepo,
                              WeavingMachineStatusRepo weavingStatusRepo,
-                             CoexLineStatusRepo coexStatusRepo) {
+                             CoexLineStatusRepo coexStatusRepo,
+                             CapacityProvider capacityProvider,
+                             TapeStockConsumer stockConsumer) {
         this.capacityMatcher = capacityMatcher;
         this.processRepo = processRepo;
-        this.weavingLogRepo = weavingLogRepo;
-        this.coexLogRepo = coexLogRepo;
         this.weavingStatusRepo = weavingStatusRepo;
         this.coexStatusRepo = coexStatusRepo;
+        this.capacityProvider = capacityProvider;
+        this.stockConsumer = stockConsumer;
     }
 
     public Map<String, Object> calculateInquiry(InquiryRequest request, String currentUser) {
@@ -64,9 +64,8 @@ public class InquiryCalculator {
         List<WeavingMachineStatus> allWMachines = weavingStatusRepo.findAll();
         List<CoexLineStatus> allCLines = coexStatusRepo.findAll();
 
-        // 🌟 性能优化：一次性加载所有平均产能到缓存 Map
-        Map<String, BigDecimal> weavingCapCache = loadWeavingCapCache();
-        Map<String, BigDecimal> coexCapCache = loadCoexCapCache();
+        // 产能快照：一次 findAll 构建工艺库标准产能 O(1) 查找 Map
+        CapacityProvider.CapacitySnapshot capSnapshot = capacityProvider.loadSnapshot();
 
         List<Map<String, Object>> itemSchedules = new ArrayList<>();
         LocalDateTime now = LocalDateTime.now();
@@ -87,25 +86,17 @@ public class InquiryCalculator {
             if (finishedMeters == null || finishedMeters.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new RuntimeException("询单明细 [" + fPn + "] 缺少数量信息，请填写总需求米数或单卷长度×卷数！");
             }
-            BigDecimal shortfall = finishedMeters; // 询单模式假设库存为0
+            // 库存整根贪心消耗（与排产同一逻辑）：以带坯零件号查库存，仅计已落库整根，快照日期FIFO；
+            // 已消耗整根直接进入共挤生产，仅缺口部分进入织造缺口计算（不再假设库存为0）
+            TapeStockConsumer.ConsumptionResult stock = stockConsumer.consume(tapePartNumber, finishedMeters);
+            BigDecimal shortfall = stock.getShortfall();
 
-            // 3. 获取平均日产能
-            BigDecimal wCap = getWeavingAvgCap(tapePartNumber, weavingCapCache);
-            BigDecimal cCap = getCoexAvgCap(fPn, coexCapCache);
-
-            // override
+            // 3. 解析日产能：人工覆盖 > 工艺库标准值 > MISSING_CAPACITY 熔断
             InquiryRequest.ItemResourceOverride override = overrideMap.get(fPn);
-            if (override != null) {
-                if (override.getManualWeavingCapacity() != null && override.getManualWeavingCapacity().compareTo(BigDecimal.ZERO) > 0) {
-                    wCap = override.getManualWeavingCapacity();
-                }
-                if (override.getManualCoexCapacity() != null && override.getManualCoexCapacity().compareTo(BigDecimal.ZERO) > 0) {
-                    cCap = override.getManualCoexCapacity();
-                }
-            }
-            if (wCap.compareTo(BigDecimal.ZERO) <= 0 || cCap.compareTo(BigDecimal.ZERO) <= 0) {
-                throw new RuntimeException("MISSING_CAPACITY:" + fPn + ":" + tapePartNumber);
-            }
+            BigDecimal wCap = capSnapshot.resolveWeavingCapacity(tapePartNumber, fPn,
+                    override != null ? override.getManualWeavingCapacity() : null);
+            BigDecimal cCap = capSnapshot.resolveCoexCapacity(fPn, tapePartNumber,
+                    override != null ? override.getManualCoexCapacity() : null);
 
             // 4. 计算推荐资源数
             BigDecimal plannedDaysBD = new BigDecimal(plannedDays);
@@ -148,9 +139,12 @@ public class InquiryCalculator {
             totalRecommendedMachines += recommendedMachineCount;
             totalRecommendedLines += recommendedLineCount;
 
-            // 6. 需求量平分
+            // 6. 需求量平分：splitShortfall 仅作用于新织造缺口部分，splitFinished 为共挤总米数
             BigDecimal splitFinished = finishedMeters.divide(new BigDecimal(splitCount), 4, RoundingMode.HALF_UP);
             BigDecimal splitShortfall = shortfall.divide(new BigDecimal(splitCount), 4, RoundingMode.HALF_UP);
+
+            // 已消耗整根按长度序列分配到共挤产线
+            TapeStockConsumer.RollDistribution rollDistribution = TapeStockConsumer.distributeByLine(stock.getRolls(), splitCount, splitFinished);
 
             Set<String> usedW = new HashSet<>();
             Set<String> usedC = new HashSet<>();
@@ -219,7 +213,8 @@ public class InquiryCalculator {
                 Map<String, Object> draftItem = buildDraftView(fPn, tapePartNumber,
                         proc.getWarpSpec(), proc.getWeftSpec(),
                         proc.getFinishedModelSpec(), proc.getTapeModelSpec(),
-                        splitFinished, splitShortfall, wDates, cDates);
+                        splitFinished, splitShortfall, wDates, cDates,
+                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null);
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
                 itemSchedules.add(draftItem);
@@ -264,7 +259,8 @@ public class InquiryCalculator {
     private Map<String, Object> buildDraftView(String fPn, String tPn, String warp, String weft,
                                                 String fSpec, String tSpec,
                                                 BigDecimal fMeters, BigDecimal tNeed,
-                                                ScheduleDates w, ScheduleDates c) {
+                                                ScheduleDates w, ScheduleDates c,
+                                                List<Map<String, Object>> consumedTapeCodes, BigDecimal surplusMeters) {
         Map<String, Object> m = new HashMap<>();
         m.put("orderId", "询单预估");
         m.put("finishedPartNumber", fPn);
@@ -277,12 +273,18 @@ public class InquiryCalculator {
         m.put("tapeMetersNeed", tNeed);
         m.put("weavingStart", w.startDate != null ? w.startDate.toString() : null);
         m.put("weavingEnd", w.endDate != null ? w.endDate.toString() : null);
-        m.put("coexStart", c.startDate.toString());
-        m.put("coexEnd", c.endDate.toString());
+        m.put("coexStart", c.startDate != null ? c.startDate.toString() : null);
+        m.put("coexEnd", c.endDate != null ? c.endDate.toString() : null);
         m.put("weavingCapacity", w.algoWeavingCapacity);
         m.put("coexCapacity", c.algoCoexCapacity);
         m.put("changeoverDays", w.algoChangeoverDays);
         m.put("startDelay", c.algoDelayDays);
+        // 库存整根消耗清单：[{tapeCode, meters}]；超额米数明示标注，不静默截断
+        m.put("consumedTapeCodes", consumedTapeCodes != null ? consumedTapeCodes : Collections.emptyList());
+        m.put("surplusMeters", surplusMeters);
+        if (surplusMeters != null && surplusMeters.compareTo(BigDecimal.ZERO) > 0) {
+            m.put("consumptionRemark", "库存最后一根整根投入超出需求 " + surplusMeters.stripTrailingZeros().toPlainString() + " 米（超额未截断，如实计入投入）");
+        }
         return m;
     }
 
@@ -296,48 +298,4 @@ public class InquiryCalculator {
         return null;
     }
 
-    // ================ 🌟 产能缓存加载方法 ================
-
-    private Map<String, BigDecimal> loadWeavingCapCache() {
-        Map<String, BigDecimal> cache = new HashMap<>();
-        weavingLogRepo.findAvgCapacityGroupByTapePartNumber().forEach(row -> {
-            cache.put((String) row[0], toBigDecimal(row[1]).multiply(new BigDecimal("2")));
-        });
-        return cache;
-    }
-
-    private Map<String, BigDecimal> loadCoexCapCache() {
-        Map<String, BigDecimal> cache = new HashMap<>();
-        coexLogRepo.findAvgCapacityGroupByFinishedPartNumber().forEach(row -> {
-            cache.put((String) row[0], toBigDecimal(row[1]));
-        });
-        return cache;
-    }
-
-    private BigDecimal getWeavingAvgCap(String tapePn, Map<String, BigDecimal> cache) {
-        if (cache.containsKey(tapePn)) return cache.get(tapePn);
-        // fallback: 原始查询逻辑
-        List<WeavingDailyLog> logs = weavingLogRepo.findByTapePartNumber(tapePn);
-        if (logs == null || logs.isEmpty()) return BigDecimal.ZERO;
-        return logs.stream().map(WeavingDailyLog::getCapacityPerDay).filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(new BigDecimal(logs.size()), 4, RoundingMode.HALF_UP)
-                .multiply(new BigDecimal("2"));
-    }
-
-    private BigDecimal getCoexAvgCap(String finishedPn, Map<String, BigDecimal> cache) {
-        if (cache.containsKey(finishedPn)) return cache.get(finishedPn);
-        // fallback: 原始查询逻辑
-        List<CoexDailyLog> logs = coexLogRepo.findByFinishedPartNumber(finishedPn);
-        if (logs == null || logs.isEmpty()) return BigDecimal.ZERO;
-        return logs.stream().map(CoexDailyLog::getCapacityPerDay).filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(new BigDecimal(logs.size()), 4, RoundingMode.HALF_UP);
-    }
-
-    private static BigDecimal toBigDecimal(Object value) {
-        if (value instanceof BigDecimal) return (BigDecimal) value;
-        if (value instanceof Number) return new BigDecimal(value.toString());
-        return BigDecimal.ZERO;
-    }
 }

@@ -25,6 +25,7 @@ public class ProductionOrder {
     private String productName;          // 品名
     private String modelSpec;            // 规格型号
     private String color;                // 胶色
+    private String material;             // 材质
 
     @Column(precision = 10, scale = 2)
     private BigDecimal unfinishedMeters; // 🌟 新增：未入库完成米数

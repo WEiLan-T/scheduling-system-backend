@@ -5,7 +5,11 @@ import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.DateUtil;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.regex.Matcher;
@@ -17,6 +21,33 @@ import java.util.regex.Pattern;
 public final class ExcelUtils {
 
     private ExcelUtils() {}
+
+    /**
+     * 大文件安全的Workbook打开方式
+     * POI 5.2.x 中通过InputStream打开xlsx时，会把每个zip条目整体读入内存，
+     * 并受 IOUtils.safelyAllocateCheck 的1亿字节硬上限约束（该检查忽略
+     * setByteArrayMaxOverride，属官方已知问题）。大文件会直接报
+     * "Tried to allocate an array of length ..., maximum length ... 100,000,000"。
+     * 改用磁盘临时文件+File方式打开可完全绕过该限制，且降低内存峰值。
+     *
+     * @param file 上传的Excel文件
+     * @return 打开的Workbook，调用方负责close
+     */
+    public static Workbook openWorkbookSafely(MultipartFile file) throws Exception {
+        File temp = File.createTempFile("import_", "_" + sanitize(file.getOriginalFilename()));
+        try {
+            file.transferTo(temp.getAbsoluteFile());
+            return WorkbookFactory.create(temp);
+        } finally {
+            // 内容已加载进内存，可删除临时文件（Windows上删除失败也不影响使用）
+            if (!temp.delete()) temp.deleteOnExit();
+        }
+    }
+
+    private static String sanitize(String name) {
+        if (name == null || name.isEmpty()) return "upload.xlsx";
+        return name.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
 
     /**
      * 安全地将 Excel Cell 转换为字符串

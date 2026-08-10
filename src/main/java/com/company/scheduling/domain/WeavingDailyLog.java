@@ -15,7 +15,8 @@ import java.time.LocalDateTime;
 @Table(name = "weaving_daily_log", uniqueConstraints = {
         @UniqueConstraint(name = "uk_weaving", columnNames = {"entry_year", "entry_month", "entry_day", "machine_no", "shift_type", "tape_code", "model_spec"})
 }, indexes = {
-        @Index(name = "idx_weaving_entry_date", columnList = "entry_date")
+        @Index(name = "idx_weaving_entry_date", columnList = "entry_date"),
+        @Index(name = "idx_weaving_pn_entry_date", columnList = "part_number, entry_date")
 })
 public class WeavingDailyLog {
     @Id
@@ -76,6 +77,24 @@ public class WeavingDailyLog {
     @Column(name = "remark", length = 500)
     private String remark;              // 备注
 
+    @Column(name = "warp_weight_per_meter", precision = 10, scale = 4)
+    private BigDecimal warpWeightPerMeter;          // 经线米重g/m
+
+    @Column(name = "weft_weight_per_meter_2000d", precision = 10, scale = 4)
+    private BigDecimal weftWeightPerMeter2000D;     // 纬线米重2000D g/m
+
+    @Column(name = "weft_weight_per_meter_3000d", precision = 10, scale = 4)
+    private BigDecimal weftWeightPerMeter3000D;     // 纬线米重3000D g/m
+
+    @Column(name = "warp_usage_kg_per_meter", precision = 10, scale = 4)
+    private BigDecimal warpUsageKgPerMeter;         // 经线耗用kg/m
+
+    @Column(name = "weft_usage_kg_per_meter_2000d", precision = 10, scale = 4)
+    private BigDecimal weftUsageKgPerMeter2000D;    // 纬线耗用2000D kg/m
+
+    @Column(name = "weft_usage_kg_per_meter_3000d", precision = 10, scale = 4)
+    private BigDecimal weftUsageKgPerMeter3000D;    // 纬线耗用3000D kg/m
+
     @Column(name = "data_quality_flag", length = 20)
     private String dataQualityFlag;     // A/B/C级标记，默认NORMAL
 
@@ -101,14 +120,5 @@ public class WeavingDailyLog {
     @PreUpdate
     public void preUpdate() {
         this.updatedAt = LocalDateTime.now();
-    }
-
-    /**
-     * 兼容getter（供排产引擎调用）：旧字段capacityPerDay → 新字段shiftOutput
-     * 非持久化字段，不参与JPA映射
-     */
-    @Transient
-    public BigDecimal getCapacityPerDay() {
-        return this.shiftOutput;
     }
 }

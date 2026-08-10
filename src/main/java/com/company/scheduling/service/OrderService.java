@@ -104,13 +104,14 @@ public class OrderService {
 
         Set<String> seenKeys = new HashSet<>(); // 🌟 文件内部去重缓存池
 
-        try (InputStream is = file.getInputStream(); Workbook workbook = WorkbookFactory.create(is)) {
+        // 大文件安全：改用磁盘临时文件方式打开，绕过POI流式打开的1亿字节硬上限
+        try (Workbook workbook = com.company.scheduling.util.ExcelUtils.openWorkbookSafely(file)) {
             Sheet sheet = workbook.getSheetAt(0);
 
             // 🌟 动态探测表头列索引
             Row headerRow = sheet.getRow(0);
             int colOrderId = -1, colCustomer = -1, colSales = -1, colUnfinished = -1;
-            int colPartNum = -1, colProductName = -1, colModelSpec = -1, colColor = -1;
+            int colPartNum = -1, colProductName = -1, colModelSpec = -1, colMaterial = -1, colColor = -1;
             int colMetersPerRoll = -1, colRollCount = -1, colTotal = -1;
             int colOrderDate = -1, colDeliveryDate = -1, colRemarks = -1;
 
@@ -120,10 +121,11 @@ public class OrderService {
                     if (header.contains("订单号")) colOrderId = j;
                     else if (header.contains("客户名称")) colCustomer = j;
                     else if (header.contains("销售员")) colSales = j;
-                    else if (header.contains("入库未完成") || header.contains("未完")) colUnfinished = j;
+                    else if (header.contains("未入库")) colUnfinished = j;
                     else if (header.contains("零件号")) colPartNum = j;
                     else if (header.contains("品名")) colProductName = j;
                     else if (header.contains("规格型号")) colModelSpec = j;
+                    else if (header.contains("材质")) colMaterial = j;
                     else if (header.contains("胶色")) colColor = j;
                     else if (header.contains("单卷长度") || header.equals("长度")) colMetersPerRoll = j;
                     else if (header.contains("卷数") || header.equals("卷")) colRollCount = j;
@@ -155,6 +157,7 @@ public class OrderService {
                 if(colUnfinished >= 0) order.setUnfinishedMeters(parseBigDecimalSafely(getCellValueAsString(row.getCell(colUnfinished))));
                 if(colProductName >= 0) order.setProductName(getCellValueAsString(row.getCell(colProductName)));
                 if(colModelSpec >= 0) order.setModelSpec(getCellValueAsString(row.getCell(colModelSpec)));
+                if(colMaterial >= 0) order.setMaterial(getCellValueAsString(row.getCell(colMaterial)));
                 if(colColor >= 0) order.setColor(getCellValueAsString(row.getCell(colColor)));
 
                 if(colMetersPerRoll >= 0) order.setMetersPerRoll(parseBigDecimalSafely(getCellValueAsString(row.getCell(colMetersPerRoll))));
@@ -184,7 +187,7 @@ public class OrderService {
             Sheet sheet = workbook.createSheet("销售订单明细");
             Row headerRow = sheet.createRow(0);
 
-            String[] headers = {"客户名称", "订单号", "销售员", "未入库完成米数", "零件号", "品名", "规格型号", "胶色", "单卷长度", "卷数", "总数量(米)", "订单下达时间", "交货期", "备注"};
+            String[] headers = {"客户名称", "订单号", "销售员", "未入库完成米数", "零件号", "品名", "规格型号", "材质", "胶色", "单卷长度", "卷数", "总数量(米)", "订单下达时间", "交货期", "备注"};
 
             CellStyle headerStyle = workbook.createCellStyle();
             Font font = workbook.createFont(); font.setBold(true); headerStyle.setFont(font);
@@ -202,15 +205,16 @@ public class OrderService {
                 row.createCell(4).setCellValue(order.getFinishedPartNumber() != null ? order.getFinishedPartNumber() : "");
                 row.createCell(5).setCellValue(order.getProductName() != null ? order.getProductName() : "");
                 row.createCell(6).setCellValue(order.getModelSpec() != null ? order.getModelSpec() : "");
-                row.createCell(7).setCellValue(order.getColor() != null ? order.getColor() : "");
+                row.createCell(7).setCellValue(order.getMaterial() != null ? order.getMaterial() : "");
+                row.createCell(8).setCellValue(order.getColor() != null ? order.getColor() : "");
 
-                if(order.getMetersPerRoll() != null) row.createCell(8).setCellValue(order.getMetersPerRoll().doubleValue());
-                if(order.getRollCount() != null) row.createCell(9).setCellValue(order.getRollCount());
-                if(order.getTotalLength() != null) row.createCell(10).setCellValue(order.getTotalLength().doubleValue());
+                if(order.getMetersPerRoll() != null) row.createCell(9).setCellValue(order.getMetersPerRoll().doubleValue());
+                if(order.getRollCount() != null) row.createCell(10).setCellValue(order.getRollCount());
+                if(order.getTotalLength() != null) row.createCell(11).setCellValue(order.getTotalLength().doubleValue());
 
-                if (order.getOrderDate() != null) row.createCell(11).setCellValue(order.getOrderDate().toString());
-                if (order.getDeliveryDate() != null) row.createCell(12).setCellValue(order.getDeliveryDate().toString());
-                row.createCell(13).setCellValue(order.getRemarks() != null ? order.getRemarks() : "");
+                if (order.getOrderDate() != null) row.createCell(12).setCellValue(order.getOrderDate().toString());
+                if (order.getDeliveryDate() != null) row.createCell(13).setCellValue(order.getDeliveryDate().toString());
+                row.createCell(14).setCellValue(order.getRemarks() != null ? order.getRemarks() : "");
             }
             for (int i = 0; i < headers.length; i++) sheet.autoSizeColumn(i);
             workbook.write(bos); return bos.toByteArray();

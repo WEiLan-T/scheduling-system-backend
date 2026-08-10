@@ -199,6 +199,20 @@
                                 <el-form-item label="车间备注"><el-input v-model="weavingForm.remarks" placeholder="如有异常请详细记录..."></el-input></el-form-item>
                             </div>
 
+                            <div class="form-section" style="background:#f0fdf4; border-color:#bbf7d0;">
+                                <div style="margin-bottom: 15px; font-size: 13px; color: #15803d; font-weight: bold;">⚖️ 米重/耗用可选补录（米重可从工艺库自动补齐）：</div>
+                                <el-row :gutter="20">
+                                    <el-col :span="8"><el-form-item label="经线米重(g/m)"><el-input-number v-model="weavingForm.warpWeightPerMeter" :min="0" :precision="4" :step="0.01" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="8"><el-form-item label="纬线米重3000D"><el-input-number v-model="weavingForm.weftWeightPerMeter3000D" :min="0" :precision="4" :step="0.01" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="8"><el-form-item label="纬线米重2000D"><el-input-number v-model="weavingForm.weftWeightPerMeter2000D" :min="0" :precision="4" :step="0.01" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                </el-row>
+                                <el-row :gutter="20">
+                                    <el-col :span="8"><el-form-item label="经线耗用(kg/m)"><el-input-number v-model="weavingForm.warpUsageKgPerMeter" :min="0" :precision="4" :step="0.001" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="8"><el-form-item label="纬耗用3000D(kg/m)"><el-input-number v-model="weavingForm.weftUsageKgPerMeter3000D" :min="0" :precision="4" :step="0.001" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="8"><el-form-item label="纬耗用2000D(kg/m)"><el-input-number v-model="weavingForm.weftUsageKgPerMeter2000D" :min="0" :precision="4" :step="0.001" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                </el-row>
+                            </div>
+
                             <el-form-item>
                                 <el-button :type="weavingForm.id ? 'warning' : 'primary'" size="large" @click="submitWeaving" :loading="loading">{{ weavingForm.id ? '💾 保存修正内容' : '➕ 正式归档入库' }}</el-button>
                                 <el-button v-if="weavingForm.id" size="large" @click="resetWeavingForm">放弃修改</el-button>
@@ -238,6 +252,12 @@
                             <el-table-column prop="modelSpec" label="型号规格" width="130" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="warpThread" label="经线" width="100" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="weftThread" label="纬线" width="120" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="warpWeightPerMeter" label="经米重(g/m)" width="100" align="right"></el-table-column>
+                            <el-table-column prop="weftWeightPerMeter3000D" label="纬米重3000D" width="100" align="right"></el-table-column>
+                            <el-table-column prop="weftWeightPerMeter2000D" label="纬米重2000D" width="100" align="right"></el-table-column>
+                            <el-table-column prop="warpUsageKgPerMeter" label="经耗用(kg/m)" width="100" align="right"></el-table-column>
+                            <el-table-column prop="weftUsageKgPerMeter3000D" label="纬耗3000D(kg/m)" width="115" align="right"></el-table-column>
+                            <el-table-column prop="weftUsageKgPerMeter2000D" label="纬耗2000D(kg/m)" width="115" align="right"></el-table-column>
                             <el-table-column prop="shiftType" label="班次" width="60" align="center"><template #default="scope"><el-tag :type="scope.row.shiftType === '白' ? 'warning' : 'info'" size="small">{{ scope.row.shiftType }}班</el-tag></template></el-table-column>
                             <el-table-column prop="workerName" label="姓名" width="80" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="shiftOutput" label="产量(米)" width="90"><template #default="scope"><b style="color: #16a34a;">+ {{ scope.row.shiftOutput }}</b></template></el-table-column>
@@ -366,6 +386,7 @@
                             <div style="display: flex; gap: 10px;">
                                 <el-input v-model="invSearchKeyword" placeholder="输入带坯型号回车过滤..." style="width: 300px;" clearable @clear="loadInventory" @keyup.enter="loadInventory"></el-input>
                                 <el-button type="primary" @click="loadInventory">精准检视后台数据</el-button>
+                                <el-button type="warning" plain @click="openDailySummary">📈 日库存统计</el-button>
                             </div>
                             <el-button type="success" @click="openAddInv">手工建档入库</el-button>
                         </div>
@@ -435,14 +456,24 @@
                                             <el-table-column prop="tapeCode" label="带坯编号" width="110">
                                                 <template #default="scope"><b># {{ scope.row.tapeCode }}</b></template>
                                             </el-table-column>
+                                            <el-table-column prop="machineNo" label="机台" width="90" align="center">
+                                                <template #default="scope">
+                                                    <el-tag v-if="scope.row.machineNo" type="danger" size="small" effect="dark">{{ scope.row.machineNo }}机·在产</el-tag>
+                                                    <span v-else style="color:#94a3b8;">-</span>
+                                                </template>
+                                            </el-table-column>
+                                            <el-table-column prop="splitSeq" label="分切序号" width="80" align="center">
+                                                <template #default="scope">{{ scope.row.splitSeq ? ('-' + scope.row.splitSeq) : '整根' }}</template>
+                                            </el-table-column>
                                             <el-table-column prop="stockMeters" label="此批库存(米)" width="110"></el-table-column>
                                             <el-table-column prop="stockType" label="库存类型" width="90"></el-table-column>
                                             <el-table-column prop="snapshotDate" label="快照日期" width="110"></el-table-column>
                                             <el-table-column prop="reconcileStatus" label="核对状态" width="100">
                                                 <template #default="scope"><el-tag size="small" :type="scope.row.reconcileStatus === 'RECONCILED' ? 'success' : 'info'">{{ scope.row.reconcileStatus || 'PENDING' }}</el-tag></template>
                                             </el-table-column>
-                                            <el-table-column label="操作" width="110" align="center">
+                                            <el-table-column label="操作" width="160" align="center">
                                                 <template #default="scope">
+                                                    <el-button type="warning" size="small" plain @click="openSplitInv(scope.row)" :disabled="!!scope.row.machineNo">切</el-button>
                                                     <el-button type="primary" size="small" plain @click="openEditInv(scope.row)">修</el-button>
                                                     <el-button type="danger" size="small" plain @click="deleteInv(scope.row.id)">删</el-button>
                                                 </template>
@@ -486,6 +517,52 @@
                             </el-form>
                             <template #footer><el-button @click="invDialogVisible = false">取消</el-button><el-button type="primary" @click="saveInv" :loading="invSaveLoading">确认落库</el-button></template>
                         </el-dialog>
+
+                        <!-- ✂️ 带坯分切弹窗 -->
+                        <el-dialog :title="'✂️ 带坯分切：# ' + splitSource.tapeCode" v-model="splitDialogVisible" width="560px">
+                            <el-alert :title="'原卷长度：' + Number(splitSource.stockMeters).toFixed(2) + ' 米，分切后新卷编号自动追加后缀 -1、-2...，总长不得超过原长'" type="info" show-icon :closable="false" style="margin-bottom: 15px;"></el-alert>
+                            <div v-for="(len, idx) in splitLengths" :key="idx" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                <el-tag type="warning" effect="plain" style="width: 130px; text-align: center;">{{ splitSource.tapeCode }}-{{ idx + 1 }}</el-tag>
+                                <el-input-number v-model="splitLengths[idx]" :min="0" :precision="2" :controls="false" placeholder="输入此根长度(米)" style="flex: 1;"></el-input-number>
+                                <el-button type="danger" plain size="small" @click="removeSplitRow(idx)">删</el-button>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 5px;">
+                                <el-button type="primary" plain size="small" @click="addSplitRow">+ 增加一根</el-button>
+                                <span style="font-size: 13px;">
+                                    已分配：<b :style="{ color: splitTotal > Number(splitSource.stockMeters) + 1e-9 ? '#ef4444' : '#16a34a' }">{{ splitTotal.toFixed(2) }}</b>
+                                    / {{ Number(splitSource.stockMeters).toFixed(2) }} 米
+                                    <span v-if="Number(splitSource.stockMeters) - splitTotal > 1e-9" style="color:#94a3b8;">（剩余 {{ (Number(splitSource.stockMeters) - splitTotal).toFixed(2) }} 米不分切）</span>
+                                </span>
+                            </div>
+                            <template #footer><el-button @click="splitDialogVisible = false">取消</el-button><el-button type="primary" @click="submitSplit" :loading="splitSaving">确认分切</el-button></template>
+                        </el-dialog>
+
+                        <!-- 📈 日库存推算统计弹窗 -->
+                        <el-dialog title="📈 推算日库存统计（锚点快照 + 织造产量 − 共挤消耗）" v-model="dailySummaryVisible" width="900px" top="6vh">
+                            <div class="filter-bar" style="margin-bottom: 15px;">
+                                <b style="color: #475569; font-size: 14px; margin-right: 5px;">查询范围：</b>
+                                <el-date-picker v-model="dailySummaryRange" type="daterange" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" value-format="YYYY-MM-DD" style="width: 300px;" clearable></el-date-picker>
+                                <span style="font-size: 12px; color: #94a3b8;">不选默认查当天</span>
+                                <el-button type="primary" size="small" @click="loadDailySummary" :loading="dailySummaryLoading" style="margin-left: auto;">查询</el-button>
+                            </div>
+                            <el-table :data="dailySummaryData" border stripe size="small" max-height="480" v-loading="dailySummaryLoading">
+                                <el-table-column prop="date" label="目标日期" width="110" align="center"></el-table-column>
+                                <el-table-column prop="partNumber" label="带坯零件号" width="110"></el-table-column>
+                                <el-table-column prop="tapeCode" label="带坯编号" width="110"></el-table-column>
+                                <el-table-column prop="anchorDate" label="锚点快照日" width="110" align="center"></el-table-column>
+                                <el-table-column prop="anchorStock" label="锚点库存(米)" width="110" align="right"></el-table-column>
+                                <el-table-column prop="weavingAdded" label="织造新增(米)" width="110" align="right">
+                                    <template #default="scope"><span style="color:#16a34a;">+ {{ scope.row.weavingAdded }}</span></template>
+                                </el-table-column>
+                                <el-table-column prop="coexConsumed" label="共挤消耗(米)" width="110" align="right">
+                                    <template #default="scope"><span style="color:#ef4444;">− {{ scope.row.coexConsumed }}</span></template>
+                                </el-table-column>
+                                <el-table-column prop="estimatedStock" label="推算日库存(米)" align="right">
+                                    <template #default="scope"><el-tag :type="scope.row.estimatedStock > 0 ? 'success' : 'danger'" effect="dark" size="small">{{ scope.row.estimatedStock }}</el-tag></template>
+                                </el-table-column>
+                            </el-table>
+                            <template #footer><el-button @click="dailySummaryVisible = false">关闭</el-button></template>
+                        </el-dialog>
                     </el-card>
                 </div>
 
@@ -511,14 +588,26 @@
                         </div>
 
                         <el-table :data="paginatedProcessList" border stripe size="small" style="width: 100%">
-                            <el-table-column prop="id" label="工艺ID" width="70" align="center"></el-table-column>
-                            <el-table-column prop="finishedPartNumber" label="成品零件号"></el-table-column>
-                            <el-table-column prop="finishedModelSpec" label="成品规格"></el-table-column>
-                            <el-table-column prop="tapePartNumber" label="带坯零件号"></el-table-column>
-                            <el-table-column prop="tapeModelSpec" label="带坯规格"></el-table-column>
-                            <el-table-column prop="warpSpec" label="经线型号"></el-table-column>
-                            <el-table-column prop="weftSpec" label="纬线型号"></el-table-column>
-                            <el-table-column label="操作" width="120" align="center">
+                            <el-table-column prop="id" label="工艺ID" width="70" align="center" fixed></el-table-column>
+                            <el-table-column prop="finishedPartNumber" label="成品零件号" width="110" fixed></el-table-column>
+                            <el-table-column prop="finishedModelSpec" label="成品规格型号" width="130" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="materialType" label="材料类型" width="90"></el-table-column>
+                            <el-table-column prop="coexMaxDailyOutput" label="共挤最大日产" width="105" align="right">
+                                <template #default="scope"><el-tag size="small" type="warning" effect="plain">{{ scope.row.coexMaxDailyOutput ?? '-' }}</el-tag></template>
+                            </el-table-column>
+                            <el-table-column prop="tapePartNumber" label="带坯零件号" width="110"></el-table-column>
+                            <el-table-column prop="tapeModelSpec" label="带坯规格型号" width="130" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="weavingStandardDailyOutput" label="织造标准日产" width="105" align="right">
+                                <template #default="scope"><el-tag size="small" type="success" effect="plain">{{ scope.row.weavingStandardDailyOutput ?? '-' }}</el-tag></template>
+                            </el-table-column>
+                            <el-table-column prop="warpSpec" label="经线型号" width="100" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="weftSpec3000D" label="纬线3000D" width="100" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="weftSpec2000D" label="纬线2000D" width="100" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="warpWeightPerMeter" label="经米重(g/m)" width="100" align="right"></el-table-column>
+                            <el-table-column prop="weftWeightPerMeter3000D" label="纬米重3000D" width="100" align="right"></el-table-column>
+                            <el-table-column prop="weftWeightPerMeter2000D" label="纬米重2000D" width="100" align="right"></el-table-column>
+                            <el-table-column prop="glueUsagePerMeter" label="用胶量(kg/m)" width="100" align="right"></el-table-column>
+                            <el-table-column label="操作" width="120" align="center" fixed="right">
                                 <template #default="scope">
                                     <el-button type="primary" size="small" plain @click="openEditProcess(scope.row)">修</el-button>
                                     <el-button type="danger" size="small" plain @click="deleteProcess(scope.row.id)">删</el-button>
@@ -529,6 +618,32 @@
                         <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
                             <el-pagination v-model:current-page="processPage" :page-size="10" layout="total, prev, pager, next" :total="processTotal"></el-pagination>
                         </div>
+
+                        <!-- ⚙️ 工艺编辑对话框（14业务字段） -->
+                        <el-dialog :title="processForm.id ? '🛠️ 修正工艺路线参数' : '⚙️ 建立新工艺纽带'" v-model="processDialogVisible" width="760px">
+                            <el-form :model="processForm" label-width="130px" size="default">
+                                <el-row :gutter="16">
+                                    <el-col :span="12"><el-form-item label="成品零件号"><el-input v-model="processForm.finishedPartNumber" placeholder="必填，唯一"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="成品规格型号"><el-input v-model="processForm.finishedModelSpec"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="材料类型"><el-input v-model="processForm.materialType"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="共挤最大日产"><el-input-number v-model="processForm.coexMaxDailyOutput" :min="0" :precision="2" :controls="false" style="width:100%" placeholder="米/天，可人工核对修改"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="带坯零件号"><el-input v-model="processForm.tapePartNumber" placeholder="必填"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="带坯规格型号"><el-input v-model="processForm.tapeModelSpec"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="织造标准日产"><el-input-number v-model="processForm.weavingStandardDailyOutput" :min="0" :precision="2" :controls="false" style="width:100%" placeholder="米/天，可人工核对修改"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="织造经线型号"><el-input v-model="processForm.warpSpec"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="纬线型号3000D"><el-input v-model="processForm.weftSpec3000D" placeholder="保存时同步至默认纬线字段"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="纬线型号2000D"><el-input v-model="processForm.weftSpec2000D"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="经线米重(g/m)"><el-input-number v-model="processForm.warpWeightPerMeter" :min="0" :precision="4" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="纬线米重3000D(g/m)"><el-input-number v-model="processForm.weftWeightPerMeter3000D" :min="0" :precision="4" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="纬线米重2000D(g/m)"><el-input-number v-model="processForm.weftWeightPerMeter2000D" :min="0" :precision="4" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="用胶量(kg/m)"><el-input-number v-model="processForm.glueUsagePerMeter" :min="0" :precision="4" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                </el-row>
+                            </el-form>
+                            <template #footer>
+                                <el-button @click="processDialogVisible = false">取消</el-button>
+                                <el-button type="primary" @click="saveProcess" :loading="loading">保存工艺参数</el-button>
+                            </template>
+                        </el-dialog>
                     </el-card>
                 </div>
 
@@ -561,6 +676,7 @@
                             <el-table-column label="品名" width="120"><template #default="scope"><el-input v-model="scope.row.productName" size="small"></el-input></template></el-table-column>
                             <el-table-column label="规格型号" width="110"><template #default="scope"><el-input v-model="scope.row.modelSpec" size="small"></el-input></template></el-table-column>
                             <el-table-column label="胶色" width="70"><template #default="scope"><el-input v-model="scope.row.color" size="small"></el-input></template></el-table-column>
+                            <el-table-column label="材质" width="90"><template #default="scope"><el-input v-model="scope.row.material" size="small"></el-input></template></el-table-column>
 
                             <!-- 🌟 新增的未完米数输入框 -->
                             <el-table-column label="未完米数" width="100"><template #default="scope"><el-input-number v-model="scope.row.unfinishedMeters" :min="0" size="small" style="width: 100%" :controls="false"></el-input-number></template></el-table-column>
@@ -589,6 +705,7 @@
                                         <el-table-column prop="productName" label="品名"></el-table-column>
                                         <el-table-column prop="modelSpec" label="规格型号"></el-table-column>
                                         <el-table-column prop="color" label="胶色"></el-table-column>
+                                        <el-table-column prop="material" label="材质"></el-table-column>
                                         <el-table-column prop="unfinishedMeters" label="未完米数"></el-table-column>
                                         <el-table-column prop="metersPerRoll" label="单卷长"></el-table-column>
                                         <el-table-column prop="rollCount" label="卷数"></el-table-column>
@@ -677,7 +794,7 @@
                                         </div>
                                     </div>
                                 </div>
-                                <div v-for="row in ganttRows" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 46px;">o
+                                <div v-for="row in ganttRows" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 46px;">
                                     <div style="width: 180px; flex-shrink: 0; font-weight: bold; font-size: 13px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px; box-sizing: border-box;">
                                         {{ row.label }}
                                     </div>
@@ -767,27 +884,26 @@
                                             <el-input-number v-model="scope.row.manualCoexCap" :min="0" size="small" placeholder="自动" style="width:100%" :controls="false"></el-input-number>
                                         </template>
                                     </el-table-column>
-                                    <el-table-column label="工艺约束" show-overflow-tooltip>
+                                    <el-table-column label="工艺约束" width="120" show-overflow-tooltip>
                                         <template #default="scope">
                                             需挤 {{ scope.row.finishedMeters?.toFixed(0) }} m
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="消耗库存带坯清单" min-width="210">
+                                        <template #default="scope">
+                                            <template v-if="scope.row.consumedTapeCodes && scope.row.consumedTapeCodes.length">
+                                                <el-tag v-for="t in scope.row.consumedTapeCodes" :key="t.tapeCode" size="small" type="info" effect="plain" style="margin: 1px 3px 1px 0;">#{{ t.tapeCode }}：{{ t.meters }} m</el-tag>
+                                                <el-tooltip v-if="scope.row.consumptionRemark" placement="top" effect="dark" :content="scope.row.consumptionRemark">
+                                                    <el-tag size="small" type="danger" effect="dark" style="margin-left:3px;">超额 {{ scope.row.surplusMeters }} m</el-tag>
+                                                </el-tooltip>
+                                            </template>
+                                            <span v-else style="color:#94a3b8; font-size:12px;">—（未消耗库存整根）</span>
                                         </template>
                                     </el-table-column>
                                 </el-table>
                             </el-card>
                         </div>
                     </el-card>
-
-                    <el-dialog title="⚠️ 历史大数据缺失预警" v-model="capacityDialogVisible" width="450px">
-                        <el-alert title="触发安全熔断" description="当前新品尚未在您的历史台账中留有记录，排产引擎无法智能测算天数。请手工预估输入产能基数！" type="warning" show-icon style="margin-bottom: 20px;"></el-alert>
-                        <el-form label-width="150px">
-                            <el-form-item label="关联成品"><el-input v-model="capacityPrompt.finishedPartNumber" disabled></el-input></el-form-item>
-                            <el-form-item label="共挤预计日产能(米)"><el-input-number v-model="manualCap.coex" :min="1" style="width:100%"></el-input-number></el-form-item>
-                            <el-divider border-style="dashed"></el-divider>
-                            <el-form-item label="关联带坯"><el-input v-model="capacityPrompt.tapePartNumber" disabled></el-input></el-form-item>
-                            <el-form-item label="织造预计双班产能(米)"><el-input-number v-model="manualCap.weaving" :min="1" style="width:100%"></el-input-number></el-form-item>
-                        </el-form>
-                        <template #footer><el-button type="primary" @click="submitManualCapacity">录入并继续推进排产</el-button></template>
-                    </el-dialog>
                 </div>
 
                 <div v-show="activeMenu === 'inquiry'">
@@ -886,10 +1002,21 @@
                                         </el-select>
                                     </template>
                                 </el-table-column>
-                                <el-table-column label="工艺约束" show-overflow-tooltip>
+                                <el-table-column label="工艺约束" width="190" show-overflow-tooltip>
                                     <template #default="scope">
                                         经纬：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>
                                         需织 {{ scope.row.tapeMetersNeed?.toFixed(0) }} m | 需挤 {{ scope.row.finishedMeters?.toFixed(0) }} m
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="消耗库存带坯清单" min-width="210">
+                                    <template #default="scope">
+                                        <template v-if="scope.row.consumedTapeCodes && scope.row.consumedTapeCodes.length">
+                                            <el-tag v-for="t in scope.row.consumedTapeCodes" :key="t.tapeCode" size="small" type="info" effect="plain" style="margin: 1px 3px 1px 0;">#{{ t.tapeCode }}：{{ t.meters }} m</el-tag>
+                                            <el-tooltip v-if="scope.row.consumptionRemark" placement="top" effect="dark" :content="scope.row.consumptionRemark">
+                                                <el-tag size="small" type="danger" effect="dark" style="margin-left:3px;">超额 {{ scope.row.surplusMeters }} m</el-tag>
+                                            </el-tooltip>
+                                        </template>
+                                        <span v-else style="color:#94a3b8; font-size:12px;">—（未消耗库存整根）</span>
                                     </template>
                                 </el-table-column>
                             </el-table>
@@ -1153,6 +1280,17 @@
                                         <el-table-column prop="plannedLine" label="指派产线" width="100">
                                             <template #default="scope">{{ scope.row.plannedLine || '待指派' }}</template>
                                         </el-table-column>
+                                        <el-table-column label="消耗库存带坯清单" min-width="210">
+                                            <template #default="scope">
+                                                <template v-if="scope.row.consumedTapeCodes && scope.row.consumedTapeCodes.length">
+                                                    <el-tag v-for="t in scope.row.consumedTapeCodes" :key="t.tapeCode" size="small" type="info" effect="plain" style="margin: 1px 3px 1px 0;">#{{ t.tapeCode }}：{{ t.meters }} m</el-tag>
+                                                    <el-tooltip v-if="scope.row.consumptionRemark" placement="top" effect="dark" :content="scope.row.consumptionRemark">
+                                                        <el-tag size="small" type="danger" effect="dark" style="margin-left:3px;">超额 {{ scope.row.surplusMeters }} m</el-tag>
+                                                    </el-tooltip>
+                                                </template>
+                                                <span v-else style="color:#94a3b8; font-size:12px;">—</span>
+                                            </template>
+                                        </el-table-column>
                                     </el-table>
                                 </div>
                                 <el-empty v-else-if="!drillDownLoading" description="暂无排产数据"></el-empty>
@@ -1160,6 +1298,26 @@
                         </el-dialog>
                     </el-card>
                 </div>
+
+                <!-- ⚠️ 产能熔断补录弹窗（排产/询单共用，置于全局区域保证两页均可弹出） -->
+                <el-dialog title="⚠️ 历史大数据缺失预警" v-model="capacityDialogVisible" width="480px">
+                    <el-alert title="触发安全熔断" description="当前新品尚未在您的历史台账中留有记录，排产引擎无法智能测算天数。请手工预估输入产能基数！" type="warning" show-icon style="margin-bottom: 20px;"></el-alert>
+                    <el-form label-width="170px">
+                        <el-form-item label="关联成品"><el-input v-model="capacityPrompt.finishedPartNumber" disabled></el-input></el-form-item>
+                        <el-form-item label="共挤预计日产能(米)"><el-input-number v-model="manualCap.coex" :min="1" style="width:100%"></el-input-number></el-form-item>
+                        <el-divider border-style="dashed"></el-divider>
+                        <el-form-item label="关联带坯"><el-input v-model="capacityPrompt.tapePartNumber" disabled></el-input></el-form-item>
+                        <el-form-item label="织造预计双班产能(米)"><el-input-number v-model="manualCap.weaving" :min="1" style="width:100%"></el-input-number></el-form-item>
+                        <el-divider border-style="dashed"></el-divider>
+                        <el-form-item label="工艺库缺失字段">
+                            <el-tag type="danger" size="small" effect="plain">{{ capacityFieldLabel }}</el-tag>
+                        </el-form-item>
+                        <el-form-item label="同时保存到工艺库">
+                            <el-switch v-model="manualCap.saveToProcess" active-text="回写工艺库" inactive-text="仅本次生效"></el-switch>
+                        </el-form-item>
+                    </el-form>
+                    <template #footer><el-button type="primary" @click="submitManualCapacity">录入并继续推进排产</el-button></template>
+                </el-dialog>
 
             </div>
         </div>

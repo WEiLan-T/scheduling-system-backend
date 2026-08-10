@@ -24,6 +24,14 @@ public class WeavingEntryRequest {
     private BigDecimal standardHourlyCapacity;
     private BigDecimal performanceHours;
 
+    // 👇 新增6字段：米重/耗用（手工录入可选填）
+    private BigDecimal warpWeightPerMeter;          // 经线米重g/m
+    private BigDecimal weftWeightPerMeter2000D;     // 纬线米重2000D g/m
+    private BigDecimal weftWeightPerMeter3000D;     // 纬线米重3000D g/m
+    private BigDecimal warpUsageKgPerMeter;         // 经线耗用kg/m
+    private BigDecimal weftUsageKgPerMeter2000D;    // 纬线耗用2000D kg/m
+    private BigDecimal weftUsageKgPerMeter3000D;    // 纬线耗用3000D kg/m
+
     private Boolean isDataNormal;
     private String remarks;
     private BigDecimal totalDemand;

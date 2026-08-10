@@ -15,7 +15,8 @@ import java.time.LocalDateTime;
 @Table(name = "coex_daily_log", uniqueConstraints = {
         @UniqueConstraint(name = "uk_coex", columnNames = {"log_date", "machine_no", "product_model", "color"})
 }, indexes = {
-        @Index(name = "idx_coex_log_date", columnList = "log_date")
+        @Index(name = "idx_coex_log_date", columnList = "log_date"),
+        @Index(name = "idx_coex_model_log_date", columnList = "product_model, log_date")
 })
 public class CoexDailyLog {
     @Id

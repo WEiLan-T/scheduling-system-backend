@@ -5,6 +5,7 @@ import com.company.scheduling.dto.*;
 import com.company.scheduling.service.CoexImportService;
 import com.company.scheduling.service.DataEntryService;
 import com.company.scheduling.service.DataExportService;
+import com.company.scheduling.service.InventoryCalculationService;
 import com.company.scheduling.service.InventoryImportService;
 import com.company.scheduling.service.WeavingImportService;
 import org.springframework.http.MediaType;
@@ -28,17 +29,20 @@ public class DataEntryController {
     private final CoexImportService coexImportService;
     private final InventoryImportService inventoryImportService;
     private final DataExportService dataExportService;
+    private final InventoryCalculationService inventoryCalculationService;
 
     public DataEntryController(DataEntryService dataEntryService,
                                WeavingImportService weavingImportService,
                                CoexImportService coexImportService,
                                InventoryImportService inventoryImportService,
-                               DataExportService dataExportService) {
+                               DataExportService dataExportService,
+                               InventoryCalculationService inventoryCalculationService) {
         this.dataEntryService = dataEntryService;
         this.weavingImportService = weavingImportService;
         this.coexImportService = coexImportService;
         this.inventoryImportService = inventoryImportService;
         this.dataExportService = dataExportService;
+        this.inventoryCalculationService = inventoryCalculationService;
     }
 
     // ================== 🧶 织造执行层 ==================
@@ -162,6 +166,53 @@ public class DataEntryController {
         return ResponseEntity.ok(Map.of("message", "核对确认成功"));
     }
 
+    /**
+     * 推算日库存汇总（只读）：某日库存 = 最近一期月度权威快照 + Σ织造产量 − Σ共挤消耗
+     * 参数：date 单日；或 startDate/endDate 区间；全部缺省时默认查询当天
+     */
+    @GetMapping("/inventory/daily-summary")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<List<InventoryDailySummaryDTO>> getInventoryDailySummary(
+            @RequestParam(value = "date", required = false) String dateStr,
+            @RequestParam(value = "startDate", required = false) String startDateStr,
+            @RequestParam(value = "endDate", required = false) String endDateStr) {
+        LocalDate start;
+        LocalDate end;
+        if (dateStr != null && !dateStr.trim().isEmpty()) {
+            start = parseBusinessDate(dateStr, "date");
+            end = start;
+        } else {
+            // date 与 startDate/endDate 均缺省时默认查询当天
+            end = (endDateStr != null && !endDateStr.trim().isEmpty())
+                    ? parseBusinessDate(endDateStr, "endDate") : LocalDate.now();
+            start = (startDateStr != null && !startDateStr.trim().isEmpty())
+                    ? parseBusinessDate(startDateStr, "startDate") : end;
+        }
+        if (start.isAfter(end)) {
+            throw new RuntimeException("日期参数非法：起始日期(" + start + ")不能晚于结束日期(" + end + ")！");
+        }
+        return ResponseEntity.ok(inventoryCalculationService.calculateDailySummary(start, end));
+    }
+
+    /**
+     * 日期参数解析与合法性校验（yyyy-MM-dd）：
+     * 非法格式或年份越界时抛出带清晰业务消息的异常（由全局异常处理器转为400），
+     * 避免超范围日期穿透到 JDBC 层报"时间戳超出范围"
+     */
+    private LocalDate parseBusinessDate(String value, String paramName) {
+        LocalDate date;
+        try {
+            date = LocalDate.parse(value.trim());
+        } catch (Exception e) {
+            throw new RuntimeException("日期参数[" + paramName + "]格式非法：\"" + value + "\"，要求 yyyy-MM-dd（如 2026-08-10）");
+        }
+        // PostgreSQL date 安全范围校验，防止极值日期导致 JDBC 绑定溢出
+        if (date.getYear() < 1900 || date.getYear() > 9999) {
+            throw new RuntimeException("日期参数[" + paramName + "]超出允许范围(1900-01-01 至 9999-12-31)：" + date);
+        }
+        return date;
+    }
+
     // ================== 🔍 数据质量重检（B级数据） ==================
     @PostMapping("/data-quality/recheck")
     @PreAuthorize("hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
@@ -196,6 +247,14 @@ public class DataEntryController {
     public ResponseEntity<String> deleteInventory(@PathVariable Long id) {
         return ResponseEntity.ok(dataEntryService.deleteInventory(id));
     }
+
+    // ================== ✂️ 带坯分切 ==================
+    @PostMapping("/inventory/split")
+    @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<String> splitInventory(@RequestBody TapeSplitRequest request) {
+        return ResponseEntity.ok(dataEntryService.splitTape(request.getId(), request.getLengths()));
+    }
+
     @GetMapping("/weaving/machines")
     @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
     public ResponseEntity<List<WeavingMachineStatus>> getMachines() {

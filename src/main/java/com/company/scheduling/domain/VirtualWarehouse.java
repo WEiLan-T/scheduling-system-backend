@@ -14,7 +14,8 @@ import java.time.LocalDateTime;
 @Table(name = "virtual_warehouse", uniqueConstraints = {
         @UniqueConstraint(name = "uk_warehouse", columnNames = {"part_number", "tape_code", "snapshot_date"})
 }, indexes = {
-        @Index(name = "idx_warehouse_snapshot_date", columnList = "snapshot_date")
+        @Index(name = "idx_warehouse_snapshot_date", columnList = "snapshot_date"),
+        @Index(name = "idx_warehouse_pn_tc_date", columnList = "part_number, tape_code, snapshot_date")
 })
 public class VirtualWarehouse {
     @Id
@@ -41,6 +42,12 @@ public class VirtualWarehouse {
 
     @Column(name = "stock_type", length = 30)
     private String stockType;            // 库存类型：订单/库存/滞留
+
+    @Column(name = "machine_no", length = 50)
+    private String machineNo;            // 机台（非空=在产未落库，不计入可用库存）
+
+    @Column(name = "split_seq")
+    private Integer splitSeq;            // 分切序号（null/0=整根）
 
     @Column(name = "remark", length = 500)
     private String remark;

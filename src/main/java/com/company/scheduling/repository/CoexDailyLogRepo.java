@@ -19,17 +19,14 @@ public interface CoexDailyLogRepo extends JpaRepository<CoexDailyLog, Long> {
     @Query("SELECT c FROM CoexDailyLog c WHERE c.dataQualityFlag = 'B'")
     List<CoexDailyLog> findGradeBRecords();
 
-    // ================ 兼容方法（供排产引擎调用，映射到新字段） ================
-
-    // 兼容旧接口：按成品零件号查询台账（旧方法名保留，查询映射到新字段productModel）
-    @Query("SELECT c FROM CoexDailyLog c WHERE c.productModel = :finishedPartNumber")
-    List<CoexDailyLog> findByFinishedPartNumber(@Param("finishedPartNumber") String finishedPartNumber);
-
     /**
-     * 兼容旧接口：按成品型号(productModel)分组统计平均产能(capacityMeters)
-     * 返回行: [成品型号, 平均产能]
+     * 按带坯零件号聚合共挤消耗（SQL GROUP BY），用于日库存推算：
+     * 共挤台账无带坯零件号字段，通过工艺路线（产品型号→成品型号→带坯零件号）关联，
+     * 累加账期日在 (from, to] 区间内的产能米数
      */
-    @Query("SELECT c.productModel, AVG(c.capacityMeters) FROM CoexDailyLog c " +
-            "WHERE c.capacityMeters IS NOT NULL AND c.capacityMeters > 0 GROUP BY c.productModel")
-    List<Object[]> findAvgCapacityGroupByFinishedPartNumber();
+    @Query("SELECT p.tapePartNumber, SUM(c.capacityMeters) FROM CoexDailyLog c, ProductProcess p " +
+            "WHERE c.productModel = p.finishedModelSpec " +
+            "AND c.logDate > :from AND c.logDate <= :to " +
+            "GROUP BY p.tapePartNumber")
+    List<Object[]> sumConsumptionByTapePartNumber(@Param("from") LocalDate from, @Param("to") LocalDate to);
 }
