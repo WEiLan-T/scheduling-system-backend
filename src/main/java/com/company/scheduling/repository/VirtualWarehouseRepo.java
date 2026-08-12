@@ -1,6 +1,8 @@
 package com.company.scheduling.repository;
 
 import com.company.scheduling.domain.VirtualWarehouse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -54,4 +56,35 @@ public interface VirtualWarehouseRepo extends JpaRepository<VirtualWarehouse, Lo
     @Query("SELECT v FROM VirtualWarehouse v WHERE v.partNumber = :partNumber " +
             "AND v.snapshotDate = (SELECT MAX(v2.snapshotDate) FROM VirtualWarehouse v2)")
     List<VirtualWarehouse> findByFinishedPartNumber(@Param("partNumber") String partNumber);
+
+    /**
+     * 分页/搜索/筛选查询（供 list 端点可选分页使用），与旧全量接口一致仅查最新一期快照。
+     * keyword 模糊匹配：零件号/带坯编号/型号规格；筛选列：零件号/机台/库存类型。
+     * 所有参数均可为 null（=不过滤）。
+     * 注：运行库存在历史遗留 bytea 列，JPQL LOWER(bytea) 无对应函数会报 400，
+     * 故改用 native 查询并对所有文本列 CAST(col AS text)，ILIKE 保持大小写不敏感语义；
+     * part_number 排序列同样 cast 为 text；排序内联在 SQL 中（调用方传无排序 Pageable），
+     * countQuery 显式提供（含子查询，避免 count 派生歧义）。
+     */
+    @Query(value = "SELECT * FROM virtual_warehouse v WHERE v.snapshot_date = (SELECT MAX(v2.snapshot_date) FROM virtual_warehouse v2) " +
+            "AND (:keyword IS NULL OR CAST(v.part_number AS text) ILIKE '%' || CAST(:keyword AS text) || '%' " +
+            "OR CAST(v.tape_code AS text) ILIKE '%' || CAST(:keyword AS text) || '%' " +
+            "OR CAST(v.model_spec AS text) ILIKE '%' || CAST(:keyword AS text) || '%') " +
+            "AND (:partNumber IS NULL OR CAST(v.part_number AS text) = CAST(:partNumber AS text)) " +
+            "AND (:machineNo IS NULL OR CAST(v.machine_no AS text) = CAST(:machineNo AS text)) " +
+            "AND (:stockType IS NULL OR CAST(v.stock_type AS text) = CAST(:stockType AS text)) " +
+            "ORDER BY CAST(v.part_number AS text) ASC, v.id ASC",
+           countQuery = "SELECT COUNT(*) FROM virtual_warehouse v WHERE v.snapshot_date = (SELECT MAX(v2.snapshot_date) FROM virtual_warehouse v2) " +
+            "AND (:keyword IS NULL OR CAST(v.part_number AS text) ILIKE '%' || CAST(:keyword AS text) || '%' " +
+            "OR CAST(v.tape_code AS text) ILIKE '%' || CAST(:keyword AS text) || '%' " +
+            "OR CAST(v.model_spec AS text) ILIKE '%' || CAST(:keyword AS text) || '%') " +
+            "AND (:partNumber IS NULL OR CAST(v.part_number AS text) = CAST(:partNumber AS text)) " +
+            "AND (:machineNo IS NULL OR CAST(v.machine_no AS text) = CAST(:machineNo AS text)) " +
+            "AND (:stockType IS NULL OR CAST(v.stock_type AS text) = CAST(:stockType AS text))",
+           nativeQuery = true)
+    Page<VirtualWarehouse> searchLatestSnapshot(@Param("keyword") String keyword,
+                                                @Param("partNumber") String partNumber,
+                                                @Param("machineNo") String machineNo,
+                                                @Param("stockType") String stockType,
+                                                Pageable pageable);
 }

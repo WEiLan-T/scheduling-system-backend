@@ -68,6 +68,8 @@ public class InquiryCalculator {
         CapacityProvider.CapacitySnapshot capSnapshot = capacityProvider.loadSnapshot();
 
         List<Map<String, Object>> itemSchedules = new ArrayList<>();
+        // 需求6：带坯供给模拟冲突告警收集容器
+        List<String> warnings = new ArrayList<>();
         LocalDateTime now = LocalDateTime.now();
 
         for (InquiryRequest.InquiryItem item : items) {
@@ -88,7 +90,7 @@ public class InquiryCalculator {
             }
             // 库存整根贪心消耗（与排产同一逻辑）：以带坯零件号查库存，仅计已落库整根，快照日期FIFO；
             // 已消耗整根直接进入共挤生产，仅缺口部分进入织造缺口计算（不再假设库存为0）
-            TapeStockConsumer.ConsumptionResult stock = stockConsumer.consume(tapePartNumber, finishedMeters);
+            TapeStockConsumer.ConsumptionResult stock = stockConsumer.consume(tapePartNumber, proc.getTapeModelSpec(), finishedMeters);
             BigDecimal shortfall = stock.getShortfall();
 
             // 3. 解析日产能：人工覆盖 > 工艺库标准值 > MISSING_CAPACITY 熔断
@@ -97,6 +99,12 @@ public class InquiryCalculator {
                     override != null ? override.getManualWeavingCapacity() : null);
             BigDecimal cCap = capSnapshot.resolveCoexCapacity(fPn, tapePartNumber,
                     override != null ? override.getManualCoexCapacity() : null);
+            // 织造储备库存（与排产引擎同一算法）：reserveMeters = cCap×reserveDays，
+            // extraAdvanceDays = ceil(reserveMeters/wCap)；仅作织造开工时点偏移，不计入缺口米数；
+            // reserveDays 缺省 0 时与现状询单结果完全一致
+            BigDecimal[] reserve = SchedulingEngine.calcWeavingReserve(request.getWeavingReserveDays(), wCap, cCap);
+            BigDecimal reserveMeters = reserve[0];
+            int reserveAdvanceDays = reserve[1].intValue();
 
             // 4. 计算推荐资源数
             BigDecimal plannedDaysBD = new BigDecimal(plannedDays);
@@ -125,88 +133,89 @@ public class InquiryCalculator {
                 }
             }
 
-            // 取最大分拆数
-            int splitCount = Math.max(recommendedMachineCount, recommendedLineCount);
+            // 匹配候选机台/产线：传完整规格字符串走区间判定（spec 区间落入 limit 区间）；
+            // 候选为空时告警写入 warnings 容器，随询单响应的 conflictWarnings 键透传至前端
+            String caliberSpec = proc.getFinishedModelSpec();
+            List<WeavingMachineStatus> candidateWMachines = capacityMatcher.findBestWeavingMachinesBySpec(caliberSpec, allWMachines, warnings);
+            List<CoexLineStatus> candidateCLines = capacityMatcher.findBestCoexLinesBySpec(caliberSpec, allCLines, warnings);
 
-            // 匹配候选机台/产线
-            Double caliber = capacityMatcher.extractCaliber(proc.getFinishedModelSpec());
-            List<WeavingMachineStatus> candidateWMachines = capacityMatcher.findBestWeavingMachines(caliber, allWMachines);
-            List<CoexLineStatus> candidateCLines = capacityMatcher.findBestCoexLines(caliber, allCLines);
+            // 6. 独立出行模型（对齐 SchedulingEngine）：织造侧按 machineCount 独立出行、共挤侧按 lineCount 独立出行，
+            // 支持任意 N:M 组合（如 4对2 → 4 行织造 + 2 行共挤）；废除 splitCount=max(...) 配对模型
+            int machineCount = recommendedMachineCount;
+            int lineCount = recommendedLineCount;
 
-            int maxPhysical = Math.max(1, Math.max(candidateWMachines.size(), candidateCLines.size()));
-            if (splitCount > maxPhysical) splitCount = maxPhysical;
+            // 请求数超过物理候选数时不再静默截断：按请求数量出行，超出候选的行保持待指派（null）并写入 warnings
+            if (machineCount > candidateWMachines.size()) {
+                warnings.add("成品 [" + fPn + "] 织造机台请求 " + machineCount + " 台，口径匹配候选仅 " + candidateWMachines.size() + " 台，超出部分行待指派");
+            }
+            if (lineCount > candidateCLines.size()) {
+                warnings.add("成品 [" + fPn + "] 共挤产线请求 " + lineCount + " 条，口径匹配候选仅 " + candidateCLines.size() + " 条，超出部分行待指派");
+            }
 
             totalRecommendedMachines += recommendedMachineCount;
             totalRecommendedLines += recommendedLineCount;
 
-            // 6. 需求量平分：splitShortfall 仅作用于新织造缺口部分，splitFinished 为共挤总米数
-            BigDecimal splitFinished = finishedMeters.divide(new BigDecimal(splitCount), 4, RoundingMode.HALF_UP);
-            BigDecimal splitShortfall = shortfall.divide(new BigDecimal(splitCount), 4, RoundingMode.HALF_UP);
+            // 7. 配额：splitShortfall 仅作用于新织造缺口部分（每台机台一份），splitFinished 为共挤总米数（每产线一份）
+            BigDecimal splitShortfall = machineCount > 0 ? shortfall.divide(new BigDecimal(machineCount), 4, RoundingMode.HALF_UP) : shortfall;
+            BigDecimal splitFinished = lineCount > 0 ? finishedMeters.divide(new BigDecimal(lineCount), 4, RoundingMode.HALF_UP) : finishedMeters;
 
-            // 已消耗整根按长度序列分配到共挤产线
-            TapeStockConsumer.RollDistribution rollDistribution = TapeStockConsumer.distributeByLine(stock.getRolls(), splitCount, splitFinished);
+            // 已消耗整根按 lineCount 基数分桶分配到共挤产线（与排产链路口径一致）
+            TapeStockConsumer.RollDistribution rollDistribution = TapeStockConsumer.distributeByLine(stock.getRolls(), lineCount, splitFinished);
 
             Set<String> usedW = new HashSet<>();
             Set<String> usedC = new HashSet<>();
 
-            // 如果有指定机台/产线
+            // 如果有指定机台/产线：仅保留命中候选的 ID，其余行回落候选池自动选取
             List<String> assignedMachineIds = (override != null && override.getAssignedMachineIds() != null) ? override.getAssignedMachineIds() : Collections.emptyList();
             List<String> assignedLineIds = (override != null && override.getAssignedLineIds() != null) ? override.getAssignedLineIds() : Collections.emptyList();
+            List<WeavingMachineStatus> selectedWMachines = new ArrayList<>();
+            List<CoexLineStatus> selectedCLines = new ArrayList<>();
+            for (String mid : assignedMachineIds) {
+                candidateWMachines.stream().filter(m -> m.getMachineId().equals(mid)).findFirst().ifPresent(selectedWMachines::add);
+            }
+            for (String lid : assignedLineIds) {
+                candidateCLines.stream().filter(l -> l.getLineId().equals(lid)).findFirst().ifPresent(selectedCLines::add);
+            }
 
-            for (int i = 0; i < splitCount; i++) {
-                // 选择产线
-                CoexLineStatus cl;
-                if (i < assignedLineIds.size()) {
-                    String lineId = assignedLineIds.get(i);
-                    cl = candidateCLines.stream().filter(l -> lineId.equals(l.getLineId())).findFirst().orElse(null);
-                } else {
-                    cl = candidateCLines.stream().filter(l -> !usedC.contains(l.getLineId())).findFirst().orElse(null);
-                }
-                if (cl != null) usedC.add(cl.getLineId());
-                Integer targetWs = cl != null ? capacityMatcher.extractWorkshopNumber(cl.getWorkshopId()) : null;
+            // 8. 正排时间推导（同一成品各行共享同一基准时点，与原逐行常量计算等价）；
+            // 储备偏移：织造起点提前 reserveAdvanceDays 天开工（缺省 0 天时无偏移），计入 overallStartDate
+            BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+            BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+            LocalDateTime weavingStartRef = now.minusDays(reserveAdvanceDays);
+            LocalDateTime weavingEndRef = now.plusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
+            // 共挤开始 = 织造结束 - weaveAdvance 天；如果共挤开始早于织造开始，则共挤开始=织造开始
+            LocalDateTime coexStartRef = weavingEndRef.minusDays(weaveAdvance);
+            if (coexStartRef.isBefore(weavingStartRef)) {
+                coexStartRef = weavingStartRef;
+            }
+            LocalDateTime coexEndRef = coexStartRef.plusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
 
-                // 选择机台
+            BigDecimal changeoverDays = new BigDecimal("1");
+            Integer delayDays = 1;
+
+            // 9. 织造独立出行：每台机台一行织造资源行
+            List<String> weavingMachineIds = new ArrayList<>();
+            for (int i = 0; i < machineCount; i++) {
                 WeavingMachineStatus wm;
-                if (i < assignedMachineIds.size()) {
-                    String machineId = assignedMachineIds.get(i);
-                    wm = candidateWMachines.stream().filter(m -> machineId.equals(m.getMachineId())).findFirst().orElse(null);
+                if (i < selectedWMachines.size()) {
+                    wm = selectedWMachines.get(i);
                 } else {
                     wm = candidateWMachines.stream()
                             .filter(m -> !usedW.contains(m.getMachineId()))
-                            .max(Comparator.comparingInt(m -> capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines)
-                                    + (targetWs != null && targetWs.equals(capacityMatcher.extractWorkshopNumber(m.getWorkshopId())) ? 80 : 0)))
+                            .max(Comparator.comparingInt(m -> capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines)))
                             .orElse(null);
                 }
-                if (wm != null) usedW.add(wm.getMachineId());
-
-                // 7. 正向排产时间计算
-                BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
-                BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
-
-                // 从 now 开始正向安排
-                LocalDateTime weavingStart = now;
-                LocalDateTime weavingEnd = now.plusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
-
-                // 共挤开始 = 织造结束 - weaveAdvance 天
-                LocalDateTime coexStart = weavingEnd.minusDays(weaveAdvance);
-                // 如果共挤开始早于织造开始，则共挤开始=织造开始
-                if (coexStart.isBefore(weavingStart)) {
-                    coexStart = weavingStart;
+                if (wm != null) {
+                    usedW.add(wm.getMachineId());
+                    weavingMachineIds.add(wm.getMachineId());
                 }
-                LocalDateTime coexEnd = coexStart.plusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
-
-                BigDecimal changeoverDays = new BigDecimal("1");
-                Integer delayDays = 1;
 
                 ScheduleDates wDates = new ScheduleDates();
-                wDates.startDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingStart : null;
-                wDates.endDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingEnd : null;
+                wDates.startDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingStartRef : null;
+                wDates.endDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingEndRef : null;
                 wDates.algoWeavingCapacity = wCap;
                 wDates.algoChangeoverDays = changeoverDays;
-
                 ScheduleDates cDates = new ScheduleDates();
-                cDates.startDate = coexStart;
-                cDates.endDate = coexEnd;
                 cDates.algoCoexCapacity = cCap;
                 cDates.algoDelayDays = delayDays;
 
@@ -214,15 +223,56 @@ public class InquiryCalculator {
                         proc.getWarpSpec(), proc.getWeftSpec(),
                         proc.getFinishedModelSpec(), proc.getTapeModelSpec(),
                         splitFinished, splitShortfall, wDates, cDates,
-                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null);
+                        Collections.emptyList(), null,
+                        reserveMeters, reserveAdvanceDays);
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
-                draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
+                draftItem.put("plannedLine", null);
+                draftItem.put("allocationType", "weaving");
                 itemSchedules.add(draftItem);
 
                 // 更新 overall 时间范围
                 if (wDates.startDate != null && wDates.startDate.isBefore(overallStartDate)) overallStartDate = wDates.startDate;
-                if (cDates.startDate.isBefore(overallStartDate)) overallStartDate = cDates.startDate;
                 if (wDates.endDate != null && wDates.endDate.isAfter(overallEndDate)) overallEndDate = wDates.endDate;
+            }
+
+            // 10. 共挤独立出行：每产线一行共挤资源行；织造机台供给段按 j*lineCount/machineCount 比例归属本产线
+            for (int i = 0; i < lineCount; i++) {
+                CoexLineStatus cl;
+                if (i < selectedCLines.size()) {
+                    cl = selectedCLines.get(i);
+                } else {
+                    cl = candidateCLines.stream().filter(l -> !usedC.contains(l.getLineId())).findFirst().orElse(null);
+                }
+                if (cl != null) usedC.add(cl.getLineId());
+
+                ScheduleDates wDates = new ScheduleDates();
+                wDates.algoWeavingCapacity = wCap;
+                wDates.algoChangeoverDays = changeoverDays;
+                ScheduleDates cDates = new ScheduleDates();
+                cDates.startDate = coexStartRef;
+                cDates.endDate = coexEndRef;
+                cDates.algoCoexCapacity = cCap;
+                cDates.algoDelayDays = delayDays;
+
+                Map<String, Object> draftItem = buildDraftView(fPn, tapePartNumber,
+                        proc.getWarpSpec(), proc.getWeftSpec(),
+                        proc.getFinishedModelSpec(), proc.getTapeModelSpec(),
+                        splitFinished, splitShortfall, wDates, cDates,
+                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null,
+                        reserveMeters, reserveAdvanceDays);
+                draftItem.put("plannedMachine", null);
+                draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
+                draftItem.put("allocationType", "coex");
+                // 需求6同构接入：模拟共挤中途换带坯时点（事件基于共挤行的供给段，仅挂载 draftItem 不落库）：
+                // 供给段 = 该产线分配到的库存整根 + 按比例映射到本产线的织造机台（每台可供米数=splitShortfall）
+                draftItem.put("tapeChangeEvents", TapeSupplySimulator.simulateTapeChanges(
+                        cl != null ? cl.getLineId() : null, coexStartRef, cCap, wCap, reserveMeters,
+                        buildLineSupplySegments(rollDistribution.byLine.get(i), weavingMachineIds, lineCount, i, splitShortfall),
+                        warnings));
+                itemSchedules.add(draftItem);
+
+                // 更新 overall 时间范围
+                if (cDates.startDate.isBefore(overallStartDate)) overallStartDate = cDates.startDate;
                 if (cDates.endDate.isAfter(overallEndDate)) overallEndDate = cDates.endDate;
             }
         }
@@ -240,12 +290,40 @@ public class InquiryCalculator {
         result.put("overallEndDate", overallEndDate.toString());
         result.put("totalDays", totalDays);
         result.put("details", itemSchedules);
+        result.put("conflictWarnings", warnings);
         result.put("recommendedMachineCount", totalRecommendedMachines);
         result.put("recommendedLineCount", totalRecommendedLines);
         return result;
     }
 
     // ================ 内部方法 ================
+
+    /**
+     * 构建某条共挤产线的带坯供给段序列（供 TapeSupplySimulator 递推切换时点），与 SchedulingEngine 同构。
+     * 顺序：先库存整根（rollDistribution 已按产线分配，{tapeCode, meters}），后织造机台。
+     * 机台→产线映射：machineCount 与 lineCount 独立，按 j*lineCount/machineCount 比例归属，
+     * 支持 2对1、4对2、3对2 等任意组合；每台机台可供米数 = splitShortfall 配额。
+     */
+    private List<TapeSupplySimulator.SupplySegment> buildLineSupplySegments(
+            List<Map<String, Object>> lineRolls, List<String> weavingMachineIds,
+            int lineCount, int lineIndex, BigDecimal splitShortfall) {
+        List<TapeSupplySimulator.SupplySegment> supply = new ArrayList<>();
+        if (lineRolls != null) {
+            for (Map<String, Object> roll : lineRolls) {
+                Object meters = roll.get("meters");
+                supply.add(TapeSupplySimulator.SupplySegment.stock(
+                        String.valueOf(roll.get("tapeCode")),
+                        meters instanceof BigDecimal ? (BigDecimal) meters : BigDecimal.ZERO));
+            }
+        }
+        int bound = weavingMachineIds != null ? weavingMachineIds.size() : 0;
+        int lanes = Math.max(1, lineCount);
+        for (int j = 0; j < bound; j++) {
+            if (bound > 0 && (j * lanes) / bound != lineIndex) continue;
+            supply.add(TapeSupplySimulator.SupplySegment.machine(weavingMachineIds.get(j), splitShortfall));
+        }
+        return supply;
+    }
 
     private static class ScheduleDates {
         LocalDateTime startDate;
@@ -260,7 +338,8 @@ public class InquiryCalculator {
                                                 String fSpec, String tSpec,
                                                 BigDecimal fMeters, BigDecimal tNeed,
                                                 ScheduleDates w, ScheduleDates c,
-                                                List<Map<String, Object>> consumedTapeCodes, BigDecimal surplusMeters) {
+                                                List<Map<String, Object>> consumedTapeCodes, BigDecimal surplusMeters,
+                                                BigDecimal reserveMeters, Integer reserveAdvanceDays) {
         Map<String, Object> m = new HashMap<>();
         m.put("orderId", "询单预估");
         m.put("finishedPartNumber", fPn);
@@ -279,6 +358,9 @@ public class InquiryCalculator {
         m.put("coexCapacity", c.algoCoexCapacity);
         m.put("changeoverDays", w.algoChangeoverDays);
         m.put("startDelay", c.algoDelayDays);
+        // 织造储备库存展示字段：储备米数与对应提前开工天数（缺省 0）
+        m.put("reserveMeters", reserveMeters);
+        m.put("reserveAdvanceDays", reserveAdvanceDays);
         // 库存整根消耗清单：[{tapeCode, meters}]；超额米数明示标注，不静默截断
         m.put("consumedTapeCodes", consumedTapeCodes != null ? consumedTapeCodes : Collections.emptyList());
         m.put("surplusMeters", surplusMeters);

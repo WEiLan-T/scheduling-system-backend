@@ -65,6 +65,8 @@ public class SchedulingEngine {
         LocalDateTime overallStartDate = LocalDateTime.MAX;
         LocalDateTime overallEndDate = LocalDateTime.MIN;
         List<Map<String, Object>> itemSchedules = new ArrayList<>();
+        // 需求6：带坯供给模拟冲突告警收集容器（与 previewMultiOrder 的 ResourceTimeline.conflictWarnings 同机制）
+        List<String> warnings = new ArrayList<>();
 
         List<WeavingMachineStatus> allWMachines = weavingStatusRepo.findAll();
         List<CoexLineStatus> allCLines = coexStatusRepo.findAll();
@@ -82,7 +84,7 @@ public class SchedulingEngine {
 
             // 库存整根贪心消耗：以带坯零件号查库存（修复原成品零件号查键Bug），仅计已落库整根，快照日期FIFO；
             // 已消耗整根直接进入共挤生产，仅缺口部分进入织造缺口计算
-            TapeStockConsumer.ConsumptionResult stock = stockConsumer.consume(tapePartNumber, tapeMetersNeeded);
+            TapeStockConsumer.ConsumptionResult stock = stockConsumer.consume(tapePartNumber, proc.getTapeModelSpec(), tapeMetersNeeded);
             BigDecimal shortfall = stock.getShortfall();
 
             ScheduleAdjustmentRequest.ItemAdjustment itemAdj = req.getItemAdjustments() != null ?
@@ -93,6 +95,12 @@ public class SchedulingEngine {
                     itemAdj != null ? itemAdj.getManualWeavingCapacity() : null);
             BigDecimal cCap = capSnapshot.resolveCoexCapacity(item.getFinishedPartNumber(), tapePartNumber,
                     itemAdj != null ? itemAdj.getManualCoexCapacity() : null);
+            // 织造储备库存：共挤开工前需提前储备 cCap×reserveDays 的带坯米数，
+            // 仅作为织造开工时点偏移量（extraAdvanceDays 天），严禁计入 tapeMetersNeed 缺口米数；
+            // reserveDays 缺省 0 时 reserveMeters=0、extraAdvanceDays=0，与现状排产结果完全一致
+            BigDecimal[] reserve = calcWeavingReserve(req.getWeavingReserveDays(), wCap, cCap);
+            BigDecimal reserveMeters = reserve[0];
+            int reserveAdvanceDays = reserve[1].intValue();
             BigDecimal changeoverDays = new BigDecimal("1");
             Integer delayDays = 1;
 
@@ -106,9 +114,11 @@ public class SchedulingEngine {
             double wHoursNeeded = shortfall.compareTo(BigDecimal.ZERO) > 0 ? shortfall.divide(wCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0 : 0;
             double cHoursNeeded = finishedMeters.divide(cCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0;
 
-            Double caliber = capacityMatcher.extractCaliber(proc.getFinishedModelSpec());
-            List<WeavingMachineStatus> candidateWMachines = capacityMatcher.findBestWeavingMachines(caliber, allWMachines);
-            List<CoexLineStatus> candidateCLines = capacityMatcher.findBestCoexLines(caliber, allCLines);
+            // 口径匹配：传完整规格字符串走区间判定（spec 区间落入 limit 区间）；
+            // 候选为空时告警写入 warnings 容器，随预览响应的 conflictWarnings 键透传至前端
+            String caliberSpec = proc.getFinishedModelSpec();
+            List<WeavingMachineStatus> candidateWMachines = capacityMatcher.findBestWeavingMachinesBySpec(caliberSpec, allWMachines, warnings);
+            List<CoexLineStatus> candidateCLines = capacityMatcher.findBestCoexLinesBySpec(caliberSpec, allCLines, warnings);
 
             // 计算织造需要的机台数
             int machineCount;
@@ -156,6 +166,8 @@ public class SchedulingEngine {
 
             Set<String> usedW = new HashSet<>();
             Set<String> usedC = new HashSet<>();
+            // 需求6：按分配顺序收集织造机台ID，供共挤换带坯模拟使用
+            List<String> weavingMachineIds = new ArrayList<>();
 
             // 织造独立分配
             for (int i = 0; i < machineCount; i++) {
@@ -168,11 +180,16 @@ public class SchedulingEngine {
                             .max(Comparator.comparingInt(m -> capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines)))
                             .orElse(null);
                 }
-                if (wm != null) usedW.add(wm.getMachineId());
+                if (wm != null) {
+                    usedW.add(wm.getMachineId());
+                    weavingMachineIds.add(wm.getMachineId());
+                }
 
                 BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
                 LocalDateTime weavingEnd = deadline.minusDays(weaveAdvance);
-                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
+                // 储备偏移：织造起点相对共挤再提前 reserveAdvanceDays 天（缺省 0 天时无偏移）；
+                // 与 weaveAdvance（织造提前结束天数）各自独立叠加，互不干扰
+                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue()).minusDays(reserveAdvanceDays);
 
                 if (weavingStart.isBefore(now)) {
                     long shiftMinutes = ChronoUnit.MINUTES.between(weavingStart, now);
@@ -189,7 +206,7 @@ public class SchedulingEngine {
                 cDates.algoCoexCapacity = cCap;
                 cDates.algoDelayDays = delayDays;
 
-                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, req.getOrderId(), Collections.emptyList(), null);
+                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, req.getOrderId(), Collections.emptyList(), null, reserveMeters, reserveAdvanceDays);
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
@@ -228,10 +245,16 @@ public class SchedulingEngine {
                 cDates.algoDelayDays = delayDays;
 
                 Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, req.getOrderId(),
-                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null);
+                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null, reserveMeters, reserveAdvanceDays);
                 draftItem.put("plannedMachine", null);
                 draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
                 draftItem.put("allocationType", "coex");
+                // 需求6：模拟共挤中途换带坯时点（仅挂载 draftItem 展示，不落库）：
+                // 供给段 = 该产线分配到的库存整根 + 按比例映射到本产线的织造机台（每台可供米数=splitShortfall）
+                draftItem.put("tapeChangeEvents", TapeSupplySimulator.simulateTapeChanges(
+                        cl != null ? cl.getLineId() : null, coexStart, cCap, wCap, reserveMeters,
+                        buildLineSupplySegments(rollDistribution.byLine.get(i), weavingMachineIds, lineCount, i, splitShortfall),
+                        warnings));
                 itemSchedules.add(draftItem);
 
                 if (cDates.startDate.isBefore(overallStartDate)) overallStartDate = cDates.startDate;
@@ -241,6 +264,7 @@ public class SchedulingEngine {
 
         Map<String, Object> draft = new HashMap<>();
         draft.put("orderId", req.getOrderId()); draft.put("overallStartDate", overallStartDate.toString()); draft.put("overallEndDate", overallEndDate.toString()); draft.put("totalDays", ChronoUnit.DAYS.between(overallStartDate.toLocalDate(), overallEndDate.toLocalDate()) + 1); draft.put("details", itemSchedules);
+        draft.put("conflictWarnings", warnings);
         return draft;
     }
 
@@ -319,7 +343,7 @@ public class SchedulingEngine {
 
             // 库存整根贪心消耗：以带坯零件号查库存（修复原成品零件号查键Bug），仅计已落库整根，快照日期FIFO；
             // 已消耗整根直接进入共挤生产，仅缺口部分进入织造缺口计算
-            TapeStockConsumer.ConsumptionResult stock = stockConsumer.consume(tapePartNumber, tapeMetersNeeded);
+            TapeStockConsumer.ConsumptionResult stock = stockConsumer.consume(tapePartNumber, proc.getTapeModelSpec(), tapeMetersNeeded);
             BigDecimal shortfall = stock.getShortfall();
 
             ScheduleAdjustmentRequest.ItemAdjustment itemAdj = req.getItemAdjustments() != null ?
@@ -330,6 +354,10 @@ public class SchedulingEngine {
                     itemAdj != null ? itemAdj.getManualWeavingCapacity() : null);
             BigDecimal cCap = capSnapshot.resolveCoexCapacity(item.getFinishedPartNumber(), tapePartNumber,
                     itemAdj != null ? itemAdj.getManualCoexCapacity() : null);
+            // 织造储备库存（同单订单逻辑）：仅作开工时点偏移，不计入 tapeMetersNeed；缺省 0 天与现状一致
+            BigDecimal[] reserve = calcWeavingReserve(req.getWeavingReserveDays(), wCap, cCap);
+            BigDecimal reserveMeters = reserve[0];
+            int reserveAdvanceDays = reserve[1].intValue();
             BigDecimal changeoverDays = new BigDecimal("1");
             Integer delayDays = 1;
 
@@ -342,9 +370,11 @@ public class SchedulingEngine {
             double wHoursNeeded = shortfall.compareTo(BigDecimal.ZERO) > 0 ? shortfall.divide(wCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0 : 0;
             double cHoursNeeded = finishedMeters.divide(cCap, 4, RoundingMode.HALF_UP).doubleValue() * 24.0;
 
-            Double caliber = capacityMatcher.extractCaliber(proc.getFinishedModelSpec());
-            List<WeavingMachineStatus> candidateWMachines = capacityMatcher.findBestWeavingMachines(caliber, allWMachines);
-            List<CoexLineStatus> candidateCLines = capacityMatcher.findBestCoexLines(caliber, allCLines);
+            // 口径匹配：传完整规格字符串走区间判定（spec 区间落入 limit 区间）；
+            // 候选为空时告警写入 timeline.conflictWarnings（多订单链路既有收集机制），随预览响应透传至前端
+            String caliberSpec = proc.getFinishedModelSpec();
+            List<WeavingMachineStatus> candidateWMachines = capacityMatcher.findBestWeavingMachinesBySpec(caliberSpec, allWMachines, timeline.getConflictWarnings());
+            List<CoexLineStatus> candidateCLines = capacityMatcher.findBestCoexLinesBySpec(caliberSpec, allCLines, timeline.getConflictWarnings());
 
             // 计算织造需要的机台数
             int machineCount;
@@ -395,6 +425,8 @@ public class SchedulingEngine {
 
             Set<String> usedW = new HashSet<>();
             Set<String> usedC = new HashSet<>();
+            // 需求6：按分配顺序收集织造机台ID，供共挤换带坯模拟使用
+            List<String> weavingMachineIds = new ArrayList<>();
 
             // 织造独立分配
             for (int i = 0; i < machineCount; i++) {
@@ -412,13 +444,17 @@ public class SchedulingEngine {
                                 return score;
                             })).orElse(null);
                 }
-                if (wm != null) usedW.add(wm.getMachineId());
+                if (wm != null) {
+                    usedW.add(wm.getMachineId());
+                    weavingMachineIds.add(wm.getMachineId());
+                }
 
                 LocalDateTime machineAvailableTime = wm != null ? timeline.getMachineAvailableTime(wm.getMachineId(), now) : now;
 
                 BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
                 LocalDateTime weavingEnd = deadline.minusDays(weaveAdvance);
-                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
+                // 储备偏移：织造起点相对共挤再提前 reserveAdvanceDays 天（缺省 0 天时无偏移）
+                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue()).minusDays(reserveAdvanceDays);
 
                 if (shortfall.compareTo(BigDecimal.ZERO) > 0 && weavingStart.isBefore(machineAvailableTime)) {
                     long shift = ChronoUnit.MINUTES.between(weavingStart, machineAvailableTime);
@@ -445,7 +481,7 @@ public class SchedulingEngine {
                 cDates.algoCoexCapacity = cCap;
                 cDates.algoDelayDays = delayDays;
 
-                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, orderId, Collections.emptyList(), null);
+                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, orderId, Collections.emptyList(), null, reserveMeters, reserveAdvanceDays);
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
@@ -499,10 +535,15 @@ public class SchedulingEngine {
                 cDates.algoDelayDays = delayDays;
 
                 Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, orderId,
-                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null);
+                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null, reserveMeters, reserveAdvanceDays);
                 draftItem.put("plannedMachine", null);
                 draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
                 draftItem.put("allocationType", "coex");
+                // 需求6：模拟共挤中途换带坯时点（仅挂载 draftItem 展示，不落库），告警写入 timeline.conflictWarnings
+                draftItem.put("tapeChangeEvents", TapeSupplySimulator.simulateTapeChanges(
+                        cl != null ? cl.getLineId() : null, coexStart, cCap, wCap, reserveMeters,
+                        buildLineSupplySegments(rollDistribution.byLine.get(i), weavingMachineIds, lineCount, i, splitShortfall),
+                        timeline.getConflictWarnings()));
                 allResults.add(draftItem);
 
                 if (cDates.startDate.isBefore(overallStartDate)) overallStartDate = cDates.startDate;
@@ -520,6 +561,33 @@ public class SchedulingEngine {
 
     // ================ 内部数据结构 ================
 
+    /**
+     * 需求6：构建某条共挤产线的带坯供给段序列（供 TapeSupplySimulator 递推切换时点）。
+     * 顺序：先库存整根（rollDistribution 已按产线分配，{tapeCode, meters}），后织造机台。
+     * 机台→产线映射：machineCount 与 lineCount 独立，按 j*lineCount/machineCount 比例归属，
+     * 支持 2对1、3对2 等任意组合；每台机台可供米数 = splitShortfall 配额。
+     */
+    private List<TapeSupplySimulator.SupplySegment> buildLineSupplySegments(
+            List<Map<String, Object>> lineRolls, List<String> weavingMachineIds,
+            int lineCount, int lineIndex, BigDecimal splitShortfall) {
+        List<TapeSupplySimulator.SupplySegment> supply = new ArrayList<>();
+        if (lineRolls != null) {
+            for (Map<String, Object> roll : lineRolls) {
+                Object meters = roll.get("meters");
+                supply.add(TapeSupplySimulator.SupplySegment.stock(
+                        String.valueOf(roll.get("tapeCode")),
+                        meters instanceof BigDecimal ? (BigDecimal) meters : BigDecimal.ZERO));
+            }
+        }
+        int bound = weavingMachineIds != null ? weavingMachineIds.size() : 0;
+        int lanes = Math.max(1, lineCount);
+        for (int j = 0; j < bound; j++) {
+            if (bound > 0 && (j * lanes) / bound != lineIndex) continue;
+            supply.add(TapeSupplySimulator.SupplySegment.machine(weavingMachineIds.get(j), splitShortfall));
+        }
+        return supply;
+    }
+
     private static class ScheduleDates {
         LocalDateTime startDate;
         LocalDateTime endDate;
@@ -532,7 +600,8 @@ public class SchedulingEngine {
     private Map<String, Object> buildDraftView(String fPn, String tPn, String warp, String weft, String fSpec, String tSpec,
                                                 BigDecimal fMeters, BigDecimal tNeed,
                                                 ScheduleDates w, ScheduleDates c, String orderId,
-                                                List<Map<String, Object>> consumedTapeCodes, BigDecimal surplusMeters) {
+                                                List<Map<String, Object>> consumedTapeCodes, BigDecimal surplusMeters,
+                                                BigDecimal reserveMeters, Integer reserveAdvanceDays) {
         Map<String, Object> m = new HashMap<>();
         m.put("orderId", orderId);
         m.put("finishedPartNumber", fPn);
@@ -551,6 +620,9 @@ public class SchedulingEngine {
         m.put("coexCapacity", c.algoCoexCapacity);
         m.put("changeoverDays", w.algoChangeoverDays);
         m.put("startDelay", c.algoDelayDays);
+        // 织造储备库存展示字段：储备米数与对应提前开工天数（缺省 0）
+        m.put("reserveMeters", reserveMeters);
+        m.put("reserveAdvanceDays", reserveAdvanceDays);
         // 库存整根消耗清单：[{tapeCode, meters}]；超额米数明示标注，不静默截断
         m.put("consumedTapeCodes", consumedTapeCodes != null ? consumedTapeCodes : Collections.emptyList());
         m.put("surplusMeters", surplusMeters);
@@ -568,6 +640,20 @@ public class SchedulingEngine {
             return item.getMetersPerRoll().multiply(new BigDecimal(item.getRollCount()));
         }
         return null;
+    }
+
+    /**
+     * 织造储备库存计算：reserveMeters = cCap × reserveDays，extraAdvanceDays = ceil(reserveMeters / wCap)。
+     * reserveDays 为 null/≤0 或 wCap≤0 时返回 [0, 0]，保证缺省路径与原逻辑逐字节一致。
+     * 返回数组：[0]=储备米数，[1]=额外提前开工天数。
+     */
+    static BigDecimal[] calcWeavingReserve(Integer reserveDays, BigDecimal wCap, BigDecimal cCap) {
+        if (reserveDays == null || reserveDays <= 0 || wCap == null || wCap.compareTo(BigDecimal.ZERO) <= 0 || cCap == null) {
+            return new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO};
+        }
+        BigDecimal reserveMeters = cCap.multiply(new BigDecimal(reserveDays));
+        BigDecimal extraAdvanceDays = reserveMeters.divide(wCap, 0, RoundingMode.CEILING);
+        return new BigDecimal[]{reserveMeters, extraAdvanceDays};
     }
 
 }

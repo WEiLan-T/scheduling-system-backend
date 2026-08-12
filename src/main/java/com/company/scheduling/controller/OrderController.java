@@ -1,6 +1,7 @@
 package com.company.scheduling.controller;
 
 import com.company.scheduling.domain.ProductionOrder;
+import com.company.scheduling.dto.PageResponse;
 import com.company.scheduling.service.OrderService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -19,8 +20,19 @@ public class OrderController {
 
     @GetMapping("/list")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<List<ProductionOrder>> getAllOrders() {
-        return ResponseEntity.ok(orderService.getAllOrders());
+    public ResponseEntity<?> getAllOrders(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String orderId,
+            @RequestParam(required = false) String finishedPartNumber) {
+        // 未传 page/size 时保持旧全量行为（返回数组）
+        if (page == null && size == null) {
+            return ResponseEntity.ok(orderService.getAllOrders());
+        }
+        int p = page == null ? 0 : Math.max(page, 0);
+        int s = size == null ? 20 : Math.max(size, 1);
+        return ResponseEntity.ok(PageResponse.from(orderService.searchOrders(p, s, keyword, orderId, finishedPartNumber)));
     }
 
     @PostMapping("/batch")

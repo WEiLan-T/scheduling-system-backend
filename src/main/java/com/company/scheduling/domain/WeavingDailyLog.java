@@ -16,7 +16,9 @@ import java.time.LocalDateTime;
         @UniqueConstraint(name = "uk_weaving", columnNames = {"entry_year", "entry_month", "entry_day", "machine_no", "shift_type", "tape_code", "model_spec"})
 }, indexes = {
         @Index(name = "idx_weaving_entry_date", columnList = "entry_date"),
-        @Index(name = "idx_weaving_pn_entry_date", columnList = "part_number, entry_date")
+        @Index(name = "idx_weaving_pn_entry_date", columnList = "part_number, entry_date"),
+        @Index(name = "idx_weaving_machine_no", columnList = "machine_no"),
+        @Index(name = "idx_weaving_tape_code", columnList = "tape_code")
 })
 public class WeavingDailyLog {
     @Id

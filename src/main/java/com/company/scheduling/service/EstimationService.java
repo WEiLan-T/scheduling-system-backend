@@ -101,12 +101,17 @@ public class EstimationService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
 
-        Map<String, List<WeavingDailyLog>> weavingLogsByTapePn = weavingLogRepo.findAll().stream()
-                .filter(l -> l.getPartNumber() != null && neededTapePns.contains(l.getPartNumber()))
-                .collect(Collectors.groupingBy(WeavingDailyLog::getPartNumber));
-        Map<String, List<CoexDailyLog>> coexLogsByFinishedPn = coexLogRepo.findAll().stream()
-                .filter(l -> l.getProductModel() != null && neededFinishedPns.contains(l.getProductModel()))
-                .collect(Collectors.groupingBy(CoexDailyLog::getProductModel));
+        // 定向 IN 查询替代全表 findAll：仅加载本订单相关零件号/型号的台账，再按零件号/型号分组
+        Map<String, List<WeavingDailyLog>> weavingLogsByTapePn = neededTapePns.isEmpty()
+                ? Collections.emptyMap()
+                : weavingLogRepo.findByPartNumberIn(neededTapePns).stream()
+                        .filter(l -> l.getPartNumber() != null)
+                        .collect(Collectors.groupingBy(WeavingDailyLog::getPartNumber));
+        Map<String, List<CoexDailyLog>> coexLogsByFinishedPn = neededFinishedPns.isEmpty()
+                ? Collections.emptyMap()
+                : coexLogRepo.findByProductModelIn(neededFinishedPns).stream()
+                        .filter(l -> l.getProductModel() != null)
+                        .collect(Collectors.groupingBy(CoexDailyLog::getProductModel));
 
         List<Map<String, Object>> details = new ArrayList<>();
         for (EstimatedProductionSchedule es : schedules) {

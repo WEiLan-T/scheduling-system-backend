@@ -13,6 +13,8 @@ public class InquiryRequest {
     // 全局参数
     private Integer globalBufferDays = 3;
     private Integer weavingAdvanceDays = 2;
+    // 织造储备库存天数（null/0 = 不储备，与现状完全一致）
+    private Integer weavingReserveDays;
     // 人工调整参数（可选）
     private List<ItemResourceOverride> resourceOverrides;
 

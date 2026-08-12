@@ -7,7 +7,9 @@ import com.company.scheduling.service.DataEntryService;
 import com.company.scheduling.service.DataExportService;
 import com.company.scheduling.service.InventoryCalculationService;
 import com.company.scheduling.service.InventoryImportService;
+import com.company.scheduling.service.InventorySyncService;
 import com.company.scheduling.service.WeavingImportService;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -30,26 +32,41 @@ public class DataEntryController {
     private final InventoryImportService inventoryImportService;
     private final DataExportService dataExportService;
     private final InventoryCalculationService inventoryCalculationService;
+    private final InventorySyncService inventorySyncService;
 
     public DataEntryController(DataEntryService dataEntryService,
                                WeavingImportService weavingImportService,
                                CoexImportService coexImportService,
                                InventoryImportService inventoryImportService,
                                DataExportService dataExportService,
-                               InventoryCalculationService inventoryCalculationService) {
+                               InventoryCalculationService inventoryCalculationService,
+                               InventorySyncService inventorySyncService) {
         this.dataEntryService = dataEntryService;
         this.weavingImportService = weavingImportService;
         this.coexImportService = coexImportService;
         this.inventoryImportService = inventoryImportService;
         this.dataExportService = dataExportService;
         this.inventoryCalculationService = inventoryCalculationService;
+        this.inventorySyncService = inventorySyncService;
     }
 
     // ================== 🧶 织造执行层 ==================
     @GetMapping("/weaving/logs/list")
     @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
-    public ResponseEntity<List<WeavingDailyLog>> getWeavingLogs() {
-        return ResponseEntity.ok(dataEntryService.getWeavingLogs());
+    public ResponseEntity<?> getWeavingLogs(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Integer machineNo,
+            @RequestParam(required = false) String shiftType,
+            @RequestParam(required = false) String partNumber) {
+        // 未传 page/size 时保持旧全量行为（返回数组）
+        if (page == null && size == null) {
+            return ResponseEntity.ok(dataEntryService.getWeavingLogs());
+        }
+        int p = page == null ? 0 : Math.max(page, 0);
+        int s = size == null ? 20 : Math.max(size, 1);
+        return ResponseEntity.ok(PageResponse.from(dataEntryService.searchWeavingLogs(p, s, keyword, machineNo, shiftType, partNumber)));
     }
 
     @PostMapping("/weaving/logs")
@@ -67,8 +84,20 @@ public class DataEntryController {
     // ================== 🗜️ 共挤执行层 ==================
     @GetMapping("/coextrusion/logs/list")
     @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
-    public ResponseEntity<List<CoexDailyLog>> getCoexLogs() {
-        return ResponseEntity.ok(dataEntryService.getCoexLogs());
+    public ResponseEntity<?> getCoexLogs(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String machineNo,
+            @RequestParam(required = false) String productModel,
+            @RequestParam(required = false) String color) {
+        // 未传 page/size 时保持旧全量行为（返回数组）
+        if (page == null && size == null) {
+            return ResponseEntity.ok(dataEntryService.getCoexLogs());
+        }
+        int p = page == null ? 0 : Math.max(page, 0);
+        int s = size == null ? 20 : Math.max(size, 1);
+        return ResponseEntity.ok(PageResponse.from(dataEntryService.searchCoexLogs(p, s, keyword, machineNo, productModel, color)));
     }
 
     @PostMapping("/coextrusion/logs")
@@ -88,6 +117,8 @@ public class DataEntryController {
     @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<ImportResult> importWeaving(@RequestParam("file") MultipartFile file) {
         ImportResult result = weavingImportService.importWeavingExcel(file);
+        // 导入事务已在上方服务调用返回时提交，此处触发异步库存同步（失败不影响导入结果）
+        triggerWeavingInventorySync(result);
         return ResponseEntity.ok(result);
     }
 
@@ -106,7 +137,29 @@ public class DataEntryController {
     @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<ImportResult> importCoex(@RequestParam("file") MultipartFile file) {
         ImportResult result = coexImportService.importCoexExcel(file);
+        // 导入事务已在上方服务调用返回时提交，此处触发异步库存同步（失败不影响导入结果）
+        triggerCoexInventorySync(result);
         return ResponseEntity.ok(result);
+    }
+
+    /** 织造导入成功后触发后台异步库存同步（独立Bean调用，代理生效），并追加提示 */
+    @SuppressWarnings("unchecked")
+    private void triggerWeavingInventorySync(ImportResult result) {
+        if (result == null || result.getInsertedCount() <= 0 || result.getInsertedPayload() == null) return;
+        List<WeavingDailyLog> insertedLogs = (List<WeavingDailyLog>) result.getInsertedPayload();
+        if (insertedLogs.isEmpty()) return;
+        inventorySyncService.syncWeavingLogsAsync(insertedLogs, "EXCEL_IMPORT");
+        result.setMessage(result.getMessage() + "库存后台重算中。");
+    }
+
+    /** 共挤导入成功后触发后台异步库存同步（独立Bean调用，代理生效），并追加提示 */
+    @SuppressWarnings("unchecked")
+    private void triggerCoexInventorySync(ImportResult result) {
+        if (result == null || result.getInsertedCount() <= 0 || result.getInsertedPayload() == null) return;
+        List<CoexDailyLog> insertedLogs = (List<CoexDailyLog>) result.getInsertedPayload();
+        if (insertedLogs.isEmpty()) return;
+        inventorySyncService.syncCoexLogsAsync(insertedLogs, "EXCEL_IMPORT");
+        result.setMessage(result.getMessage() + "库存后台重算中。");
     }
 
     @GetMapping("/coextrusion/export")
@@ -232,8 +285,20 @@ public class DataEntryController {
 
     @GetMapping("/inventory/list")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_COEX_CLERK')")
-    public ResponseEntity<List<VirtualWarehouse>> getInventoryList(@RequestParam(required = false) String keyword) {
-        return ResponseEntity.ok(dataEntryService.searchInventory(keyword));
+    public ResponseEntity<?> getInventoryList(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String partNumber,
+            @RequestParam(required = false) String machineNo,
+            @RequestParam(required = false) String stockType) {
+        // 未传 page/size 时保持旧全量行为（返回最新快照数组，keyword 语义不变）
+        if (page == null && size == null) {
+            return ResponseEntity.ok(dataEntryService.searchInventory(keyword));
+        }
+        int p = page == null ? 0 : Math.max(page, 0);
+        int s = size == null ? 20 : Math.max(size, 1);
+        return ResponseEntity.ok(PageResponse.from(dataEntryService.searchInventoryPaged(p, s, keyword, partNumber, machineNo, stockType)));
     }
 
     @PostMapping("/inventory/save")
@@ -261,16 +326,86 @@ public class DataEntryController {
         return ResponseEntity.ok(dataEntryService.getAllWeavingMachines());
     }
 
+    @PostMapping("/weaving/machines")
+    @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN')")
+    public ResponseEntity<String> saveWeavingMachine(@RequestBody WeavingMachineStatus machine, Principal principal) {
+        return ResponseEntity.ok(dataEntryService.saveOrUpdateWeavingMachine(machine, principal.getName()));
+    }
+
+    @DeleteMapping("/weaving/machines/{machineId}")
+    @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN')")
+    public ResponseEntity<String> deleteWeavingMachine(@PathVariable String machineId) {
+        return ResponseEntity.ok(dataEntryService.deleteWeavingMachine(machineId));
+    }
+
+    @PostMapping("/weaving/machines/import")
+    @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN')")
+    public ResponseEntity<ImportResult> importWeavingMachines(@RequestParam("file") MultipartFile file) {
+        try {
+            return ResponseEntity.ok(dataEntryService.importWeavingMachineExcel(file));
+        } catch (Exception e) {
+            ImportResult fail = new ImportResult();
+            fail.setMessage("织造机台档案导入失败，原因：" + e.getMessage());
+            return ResponseEntity.status(500).body(fail);
+        }
+    }
+
+    @GetMapping("/weaving/machines/export")
+    @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
+    public void exportWeavingMachines(HttpServletResponse response) throws Exception {
+        dataEntryService.exportWeavingMachines(response);
+    }
+
     @GetMapping("/coextrusion/lines")
     @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
     public ResponseEntity<List<CoexLineStatus>> getLines() {
         return ResponseEntity.ok(dataEntryService.getAllCoexLines());
     }
 
+    @PostMapping("/coextrusion/lines")
+    @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN')")
+    public ResponseEntity<String> saveCoexLine(@RequestBody CoexLineStatus line, Principal principal) {
+        return ResponseEntity.ok(dataEntryService.saveOrUpdateCoexLine(line, principal.getName()));
+    }
+
+    @DeleteMapping("/coextrusion/lines/{lineId}")
+    @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN')")
+    public ResponseEntity<String> deleteCoexLine(@PathVariable String lineId) {
+        return ResponseEntity.ok(dataEntryService.deleteCoexLine(lineId));
+    }
+
+    @PostMapping("/coextrusion/lines/import")
+    @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN')")
+    public ResponseEntity<ImportResult> importCoexLines(@RequestParam("file") MultipartFile file) {
+        try {
+            return ResponseEntity.ok(dataEntryService.importCoexLineExcel(file));
+        } catch (Exception e) {
+            ImportResult fail = new ImportResult();
+            fail.setMessage("共挤产线档案导入失败，原因：" + e.getMessage());
+            return ResponseEntity.status(500).body(fail);
+        }
+    }
+
+    @GetMapping("/coextrusion/lines/export")
+    @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
+    public void exportCoexLines(HttpServletResponse response) throws Exception {
+        dataEntryService.exportCoexLines(response);
+    }
+
     @GetMapping("/process/list")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<List<ProductProcess>> getProcessList() {
-        return ResponseEntity.ok(dataEntryService.getAllProcesses());
+    public ResponseEntity<?> getProcessList(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String materialType) {
+        // 未传 page/size 时保持旧全量行为（返回数组）
+        if (page == null && size == null) {
+            return ResponseEntity.ok(dataEntryService.getAllProcesses());
+        }
+        int p = page == null ? 0 : Math.max(page, 0);
+        int s = size == null ? 20 : Math.max(size, 1);
+        return ResponseEntity.ok(PageResponse.from(dataEntryService.searchProcesses(p, s, keyword, materialType)));
     }
 
     @PostMapping("/process/save")

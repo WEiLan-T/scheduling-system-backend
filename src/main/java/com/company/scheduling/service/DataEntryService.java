@@ -3,14 +3,20 @@ package com.company.scheduling.service;
 import com.company.scheduling.domain.*;
 import com.company.scheduling.dto.*;
 import com.company.scheduling.repository.*;
+import com.company.scheduling.util.ExcelUtils;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import org.apache.poi.ss.usermodel.*;
@@ -44,6 +50,26 @@ public class DataEntryService {
     public List<CoexLineStatus> getAllCoexLines() { return coexStatusRepo.findAll(); }
     public List<WeavingDailyLog> getWeavingLogs() { return weavingLogRepo.findAll(); }
     public List<CoexDailyLog> getCoexLogs() { return coexLogRepo.findAll(); }
+
+    /** 分页搜索织造台账（新增，不影响上方旧全量方法；page 从 0 开始；排序已内联在 native SQL 的 ORDER BY 中） */
+    public Page<WeavingDailyLog> searchWeavingLogs(int page, int size, String keyword, Integer machineNo, String shiftType, String partNumber) {
+        return weavingLogRepo.search(blankToNull(keyword), machineNo, blankToNull(shiftType), blankToNull(partNumber),
+                PageRequest.of(page, size));
+    }
+
+    /** 分页搜索共挤台账（新增，不影响上方旧全量方法；page 从 0 开始；排序已内联在 native SQL 的 ORDER BY 中） */
+    public Page<CoexDailyLog> searchCoexLogs(int page, int size, String keyword, String machineNo, String productModel, String color) {
+        return coexLogRepo.search(blankToNull(keyword), blankToNull(machineNo), blankToNull(productModel), blankToNull(color),
+                PageRequest.of(page, size));
+    }
+
+    /** 分页搜索最新一期库存快照（新增，不影响旧 searchInventory 全量方法；page 从 0 开始；排序已内联在 native SQL 的 ORDER BY 中） */
+    public Page<VirtualWarehouse> searchInventoryPaged(int page, int size, String keyword, String partNumber, String machineNo, String stockType) {
+        return warehouseRepo.searchLatestSnapshot(blankToNull(keyword), blankToNull(partNumber), blankToNull(machineNo), blankToNull(stockType),
+                PageRequest.of(page, size));
+    }
+
+    private static String blankToNull(String s) { return (s == null || s.trim().isEmpty()) ? null : s.trim(); }
 
     @Transactional
     public String recordWeavingData(WeavingEntryRequest req, String currentUser) {
@@ -269,7 +295,7 @@ public class DataEntryService {
             Row headerRow = sheet.getRow(headerIdx);
 
             int colFinPn=-1, colFinModel=-1, colMaterial=-1, colCoexDaily=-1, colCoexSpeed=-1,
-                colTapePn=-1, colTapeModel=-1, colWeavingDaily=-1, colWarp=-1,
+                colTapePn=-1, colTapeModel=-1, colWeavingDaily=-1, colWeavingSpeed=-1, colWarp=-1,
                 colWeft3000=-1, colWeft2000=-1, colWarpWeight=-1, colWeftWeight3000=-1,
                 colWeftWeight2000=-1, colGlue=-1;
 
@@ -286,6 +312,7 @@ public class DataEntryService {
                     else if (h.contains("共挤生产速度") || (h.contains("共挤") && h.contains("m/h"))) colCoexSpeed = j;
                     else if (h.contains("带坯") && h.contains("零件") && colTapePn < 0) colTapePn = j;
                     else if (h.contains("织造") && h.contains("日产")) colWeavingDaily = j;
+                    else if (h.contains("织造") && (h.contains("m/h") || h.contains("速度"))) colWeavingSpeed = j;
                     else if (h.contains("经线") && h.contains("米重")) colWarpWeight = j;
                     else if (h.contains("经线")) colWarp = j;
                     else if (h.contains("纬线") && h.contains("米重") && h.contains("3000")) colWeftWeight3000 = j;
@@ -333,7 +360,13 @@ public class DataEntryService {
                     proc.setTapePartNumber("DEFAULT");
                 }
                 if (colTapeModel >= 0) proc.setTapeModelSpec(com.company.scheduling.util.ExcelUtils.getCellStringValue(row.getCell(colTapeModel)));
-                if (colWeavingDaily >= 0) proc.setWeavingStandardDailyOutput(com.company.scheduling.util.ExcelUtils.parseBigDecimalSafely(com.company.scheduling.util.ExcelUtils.getCellStringValue(row.getCell(colWeavingDaily))));
+                if (colWeavingDaily >= 0) {
+                    proc.setWeavingStandardDailyOutput(com.company.scheduling.util.ExcelUtils.parseBigDecimalSafely(com.company.scheduling.util.ExcelUtils.getCellStringValue(row.getCell(colWeavingDaily))));
+                } else if (colWeavingSpeed >= 0) {
+                    // 防御分支：源表仅有"织造速度(m/h)"类列而无"织造日产"列时，×24 换算为织造标准日产（仿共挤速度列处理模式）
+                    BigDecimal weavingSpeed = com.company.scheduling.util.ExcelUtils.parseBigDecimalSafely(com.company.scheduling.util.ExcelUtils.getCellStringValue(row.getCell(colWeavingSpeed)));
+                    proc.setWeavingStandardDailyOutput(weavingSpeed != null ? weavingSpeed.multiply(new BigDecimal(24)) : null);
+                }
                 if (colWarp >= 0) proc.setWarpSpec(com.company.scheduling.util.ExcelUtils.getCellStringValue(row.getCell(colWarp)));
                 if (colWeft3000 >= 0) {
                     String weft3000 = com.company.scheduling.util.ExcelUtils.getCellStringValue(row.getCell(colWeft3000));
@@ -401,7 +434,8 @@ public class DataEntryService {
         return "📦 手动调账成功！已为带坯 [" + req.getTapePartNumber() + "] (批次: DEFAULT) " + action + " " + req.getAdjustMeters().abs() + " 米。";
     }
 
-    private void updateVirtualWarehouse(String partNumber, String tapeCode, BigDecimal changeMeters, LocalDate entryDate, String currentUser) {
+    /** 对包外可见：供 InventorySyncService 导入后异步批量同步复用（方法体逻辑未改动） */
+    public void updateVirtualWarehouse(String partNumber, String tapeCode, BigDecimal changeMeters, LocalDate entryDate, String currentUser) {
         if (partNumber == null || partNumber.isEmpty() || changeMeters == null) return;
         String finalTapeCode = (tapeCode == null || tapeCode.trim().isEmpty()) ? "DEFAULT" : tapeCode.trim();
         LocalDate snapshotDate = entryDate != null ? entryDate : LocalDate.now();
@@ -419,10 +453,26 @@ public class DataEntryService {
             warehouse.setSnapshotDate(snapshotDate);
             warehouse.setStockType("库存");
             warehouse.setDataQualityFlag("A");
+            // 新建快照行时按带坯零件号反查工艺库，回填型号规格/经线/纬线，避免 modelSpec 为空导致消耗匹配错乱
+            ProductProcess proc = loadProcessByTapePartNumber().get(partNumber);
+            if (proc != null) {
+                warehouse.setModelSpec(proc.getTapeModelSpec());
+                warehouse.setWarpThread(proc.getWarpSpec());
+                warehouse.setWeftThread(proc.getWeftSpec());
+            }
         }
         BigDecimal current = warehouse.getStockMeters() != null ? warehouse.getStockMeters() : BigDecimal.ZERO;
         warehouse.setStockMeters(current.add(changeMeters));
         warehouseRepo.save(warehouse);
+    }
+
+    /** 按带坯零件号反查工艺库构建缓存 Map（一次 findAll，替代逐行查询；同带坯零件号取首条） */
+    private Map<String, ProductProcess> loadProcessByTapePartNumber() {
+        Map<String, ProductProcess> byTapePn = new HashMap<>();
+        for (ProductProcess p : processRepo.findAll()) {
+            if (p.getTapePartNumber() != null) byTapePn.putIfAbsent(p.getTapePartNumber(), p);
+        }
+        return byTapePn;
     }
 
     public List<VirtualWarehouse> searchInventory(String keyword) {
@@ -525,8 +575,18 @@ public class DataEntryService {
     @Autowired private ProductProcessRepo processRepo;
     public List<ProductProcess> getAllProcesses() { return processRepo.findAll(); }
 
+    /** 分页搜索工艺路线（新增，不影响上方旧全量方法；page 从 0 开始；排序已内联在 native SQL 的 ORDER BY 中） */
+    public Page<ProductProcess> searchProcesses(int page, int size, String keyword, String materialType) {
+        return processRepo.search(blankToNull(keyword), blankToNull(materialType),
+                PageRequest.of(page, size));
+    }
+
     @Transactional
     public String saveOrUpdateProcess(ProductProcess proc, String currentUser) {
+        // 织造标准产能(米/24h)正值校验：null 允许留空，0/负数拒绝保存
+        if (proc.getWeavingStandardDailyOutput() != null && proc.getWeavingStandardDailyOutput().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new RuntimeException("保存失败：织造标准日产(米/24h)必须为正数，请核对后重新提交！");
+        }
         if (proc.getId() != null) {
             ProductProcess existing = processRepo.findById(proc.getId()).orElse(new ProductProcess());
             existing.setFinishedPartNumber(proc.getFinishedPartNumber().trim()); existing.setTapePartNumber(proc.getTapePartNumber().trim());
@@ -550,4 +610,303 @@ public class DataEntryService {
 
     @Transactional public String deleteProcess(Integer id) { processRepo.deleteById(id); return "🗑️ 该工艺BOM链条已解除！"; }
     @Transactional public String deleteInventory(Long id) { warehouseRepo.deleteById(id); return "⚠️ 数据条目已从物理磁盘抹除！"; }
+
+    // =========================================================================
+    // 🏭 织造机台 / 共挤产线 档案 CRUD + Excel 导入导出
+    // （模式照抄工艺库 /process/*；口径字段 caliberLimit 统一存 "min-max" 格式）
+    // =========================================================================
+
+    /** 口径范围 "数字-数字" 格式校验（支持小数/负数，如 50-100 / 38.5-65 / -5-100）；捕获组1=下限、组2=上限，供 splitCaliberLimit 安全拆分 */
+    private static final java.util.regex.Pattern CALIBER_LIMIT_PATTERN =
+            java.util.regex.Pattern.compile("^(-?\\d+(?:\\.\\d+)?)-(\\d+(?:\\.\\d+)?)$");
+
+    private void validateCaliberLimit(String caliberLimit) {
+        if (caliberLimit == null || caliberLimit.trim().isEmpty()) return; // 允许留空
+        if (!CALIBER_LIMIT_PATTERN.matcher(caliberLimit.trim()).matches()) {
+            throw new RuntimeException("保存失败：口径范围格式非法（\"" + caliberLimit + "\"），要求\"下限-上限\"两个数字（如 50-100）！");
+        }
+    }
+
+    @Transactional
+    public String saveOrUpdateWeavingMachine(WeavingMachineStatus machine, String currentUser) {
+        if (machine.getMachineId() == null || machine.getMachineId().trim().isEmpty()) {
+            throw new RuntimeException("保存失败：机台编号不能为空！");
+        }
+        validateCaliberLimit(machine.getCaliberLimit());
+        WeavingMachineStatus target = weavingStatusRepo.findById(machine.getMachineId().trim()).orElse(new WeavingMachineStatus());
+        boolean isNew = target.getMachineId() == null;
+        target.setMachineId(machine.getMachineId().trim());
+        target.setWorkshopId(machine.getWorkshopId());
+        target.setWarpSpec(machine.getWarpSpec());
+        target.setWeftSpec(machine.getWeftSpec());
+        target.setBobbinCount(machine.getBobbinCount());
+        target.setMachineStatus(machine.getMachineStatus());
+        target.setCaliberLimit(machine.getCaliberLimit() != null ? machine.getCaliberLimit().trim() : null);
+        target.setAdjacentMachine(machine.getAdjacentMachine());
+        target.setOperatorName(machine.getOperatorName());
+        target.setEnteredBy(currentUser);
+        weavingStatusRepo.save(target);
+        return isNew ? "✅ 织造机台 [" + target.getMachineId() + "] 建档成功！" : "✅ 织造机台 [" + target.getMachineId() + "] 档案更新成功！";
+    }
+
+    @Transactional
+    public String deleteWeavingMachine(String machineId) {
+        WeavingMachineStatus machine = weavingStatusRepo.findById(machineId)
+                .orElseThrow(() -> new RuntimeException("删除失败：找不到机台 [" + machineId + "]！"));
+        // 引用校验：织造台账 machine_no 存的是机台号数字部分（recordWeavingData 的 parseMachineNo 逻辑）
+        Integer machineNo = parseMachineNo(machineId);
+        if (weavingLogRepo.existsByMachineNo(machineNo)) {
+            throw new RuntimeException("删除被拒绝：机台 [" + machineId + "] 已被织造台账（机台号 " + machineNo + "）引用，请先处理相关台账数据！");
+        }
+        weavingStatusRepo.delete(machine);
+        return "🗑️ 织造机台 [" + machineId + "] 档案已删除！";
+    }
+
+    @Transactional
+    public ImportResult importWeavingMachineExcel(MultipartFile file) throws Exception {
+        if (file == null || file.isEmpty()) throw new RuntimeException("文件为空！");
+        ImportResult result = new ImportResult();
+        int inserted = 0, skipped = 0;
+        List<String> warnings = new ArrayList<>();
+
+        // 大文件安全：磁盘临时文件方式打开，绕过 POI 1亿字节硬上限
+        try (Workbook workbook = ExcelUtils.openWorkbookSafely(file)) {
+            Sheet sheet = workbook.getSheetAt(0);
+            // 动态定位表头行（模板表头在第2行，但按关键字全命中识别，不硬编码行号）；
+            // 关键字放宽为"下限"/"上限"子串，同时命中"口径下限/口径上限"与"口径限制(下限)/(上限)"两类模板表头
+            int headerIdx = ExcelUtils.locateHeaderRow(sheet, new String[]{"machine_id", "下限", "上限"}, 10);
+            if (headerIdx < 0) throw new RuntimeException("未找到表头行（需包含 machine_id 及口径下限/上限（或\"口径限制(下限/上限)\"）列）！");
+            Row headerRow = sheet.getRow(headerIdx);
+
+            int colId = -1, colWorkshop = -1, colMin = -1, colMax = -1, colStatus = -1, colRemark = -1;
+            for (int j = 0; j < headerRow.getLastCellNum(); j++) {
+                String h = ExcelUtils.getCellStringValue(headerRow.getCell(j)).trim().replaceAll("\\s+", "");
+                if (h.isEmpty()) continue;
+                if (h.contains("machine_id") && colId < 0) colId = j;
+                else if (h.contains("workshop_id") && colWorkshop < 0) colWorkshop = j;
+                else if (h.contains("下限") && colMin < 0) colMin = j;
+                else if (h.contains("上限") && colMax < 0) colMax = j;
+                else if (h.contains("status") && colStatus < 0) colStatus = j;
+                else if (h.contains("备注") && colRemark < 0) colRemark = j;
+            }
+
+            for (int i = headerIdx + 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                // 遇首个全空行提前终止（防幽灵行）
+                if (row == null) break;
+                boolean allBlank = true;
+                for (int c = row.getFirstCellNum(); c >= 0 && c < row.getLastCellNum(); c++) {
+                    if (!ExcelUtils.getCellStringValue(row.getCell(c)).isEmpty()) { allBlank = false; break; }
+                }
+                if (allBlank) break;
+
+                String machineId = colId >= 0 ? ExcelUtils.getCellStringValue(row.getCell(colId)).trim() : "";
+                if (machineId.isEmpty()) { skipped++; continue; }
+
+                // 口径下限/上限两数值列拼接 "min-max" 写 caliberLimit；非法值记警告并置空
+                String caliberLimit = null;
+                if (colMin >= 0 && colMax >= 0) {
+                    String minStr = ExcelUtils.getCellStringValue(row.getCell(colMin)).trim();
+                    String maxStr = ExcelUtils.getCellStringValue(row.getCell(colMax)).trim();
+                    if (!minStr.isEmpty() && !maxStr.isEmpty()) {
+                        String candidate = minStr + "-" + maxStr;
+                        if (CALIBER_LIMIT_PATTERN.matcher(candidate).matches()) {
+                            caliberLimit = candidate;
+                        } else {
+                            warnings.add("第" + (i + 1) + "行：口径范围\"" + candidate + "\"格式非法（要求数字-数字），已置空");
+                        }
+                    }
+                }
+
+                // 主键 UPSERT：存在则覆盖更新，不存在则新增
+                WeavingMachineStatus machine = weavingStatusRepo.findById(machineId).orElse(new WeavingMachineStatus());
+                machine.setMachineId(machineId);
+                if (colWorkshop >= 0) machine.setWorkshopId(ExcelUtils.getCellStringValue(row.getCell(colWorkshop)).trim());
+                if (colStatus >= 0) machine.setMachineStatus(ExcelUtils.getCellStringValue(row.getCell(colStatus)).trim());
+                machine.setCaliberLimit(caliberLimit);
+                // 模板"备注"列实体无对应字段，导入时忽略不映射
+                machine.setEnteredBy("EXCEL_IMPORT");
+                weavingStatusRepo.save(machine);
+                inserted++;
+            }
+        }
+        result.setTotalRows(inserted + skipped);
+        result.setInsertedCount(inserted);
+        result.setSkippedCount(skipped);
+        String warnText = warnings.isEmpty() ? "" : "；警告 " + warnings.size() + " 条：" + String.join("；", warnings);
+        result.setMessage("📊 织造机台档案导入完成！导入/更新 " + inserted + " 条，跳过空行 " + skipped + " 条" + warnText);
+        return result;
+    }
+
+    public void exportWeavingMachines(HttpServletResponse response) throws Exception {
+        List<WeavingMachineStatus> machines = weavingStatusRepo.findAll();
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("织造机台档案");
+            Row headerRow = sheet.createRow(0);
+            // 与源模板列一致；caliberLimit 拆回口径下限/口径上限两列
+            String[] headers = {"machine_id", "workshop_id", "口径下限", "口径上限", "machine_status", "备注"};
+            CellStyle headerStyle = workbook.createCellStyle(); Font font = workbook.createFont(); font.setBold(true); headerStyle.setFont(font);
+            for (int i = 0; i < headers.length; i++) { Cell cell = headerRow.createCell(i); cell.setCellValue(headers[i]); cell.setCellStyle(headerStyle); }
+
+            int rowIdx = 1;
+            for (WeavingMachineStatus m : machines) {
+                Row row = sheet.createRow(rowIdx++);
+                row.createCell(0).setCellValue(m.getMachineId() != null ? m.getMachineId() : "");
+                row.createCell(1).setCellValue(m.getWorkshopId() != null ? m.getWorkshopId() : "");
+                String[] range = splitCaliberLimit(m.getCaliberLimit());
+                if (range[0] != null) row.createCell(2).setCellValue(Double.parseDouble(range[0])); else row.createCell(2).setCellValue("");
+                if (range[1] != null) row.createCell(3).setCellValue(Double.parseDouble(range[1])); else row.createCell(3).setCellValue("");
+                row.createCell(4).setCellValue(m.getMachineStatus() != null ? m.getMachineStatus() : "");
+                row.createCell(5).setCellValue(""); // 实体无备注字段，导出留空保持模板同构
+            }
+            for (int i = 0; i < headers.length; i++) sheet.autoSizeColumn(i);
+            workbook.write(bos);
+
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=weaving_machines.xlsx");
+            response.getOutputStream().write(bos.toByteArray());
+            response.getOutputStream().flush();
+        }
+    }
+
+    /** 口径 "min-max" 拆为两列，无法拆分时返回 [null, null]。
+     *  用正则捕获组拆分（而非 indexOf('-')），避免负下限（如 "-5-100"）被误切成 ["", "5-100"] 导致 NumberFormatException */
+    private String[] splitCaliberLimit(String caliberLimit) {
+        if (caliberLimit != null) {
+            java.util.regex.Matcher m = CALIBER_LIMIT_PATTERN.matcher(caliberLimit.trim());
+            if (m.matches()) {
+                return new String[]{m.group(1), m.group(2)};
+            }
+        }
+        return new String[]{null, null};
+    }
+
+    @Transactional
+    public String saveOrUpdateCoexLine(CoexLineStatus line, String currentUser) {
+        if (line.getLineId() == null || line.getLineId().trim().isEmpty()) {
+            throw new RuntimeException("保存失败：产线编号不能为空！");
+        }
+        validateCaliberLimit(line.getCaliberLimit());
+        CoexLineStatus target = coexStatusRepo.findById(line.getLineId().trim()).orElse(new CoexLineStatus());
+        boolean isNew = target.getLineId() == null;
+        target.setLineId(line.getLineId().trim());
+        target.setWorkshopId(line.getWorkshopId());
+        target.setCaliberLimit(line.getCaliberLimit() != null ? line.getCaliberLimit().trim() : null);
+        target.setLineStatus(line.getLineStatus());
+        target.setEnteredBy(currentUser);
+        coexStatusRepo.save(target);
+        return isNew ? "✅ 共挤产线 [" + target.getLineId() + "] 建档成功！" : "✅ 共挤产线 [" + target.getLineId() + "] 档案更新成功！";
+    }
+
+    @Transactional
+    public String deleteCoexLine(String lineId) {
+        CoexLineStatus line = coexStatusRepo.findById(lineId)
+                .orElseThrow(() -> new RuntimeException("删除失败：找不到产线 [" + lineId + "]！"));
+        // 引用校验：共挤台账 machine_no 字段直接存产线号（recordCoexData 中 log.setMachineNo(req.getLineId())）
+        if (coexLogRepo.existsByMachineNo(lineId)) {
+            throw new RuntimeException("删除被拒绝：产线 [" + lineId + "] 已被共挤台账引用，请先处理相关台账数据！");
+        }
+        coexStatusRepo.delete(line);
+        return "🗑️ 共挤产线 [" + lineId + "] 档案已删除！";
+    }
+
+    @Transactional
+    public ImportResult importCoexLineExcel(MultipartFile file) throws Exception {
+        if (file == null || file.isEmpty()) throw new RuntimeException("文件为空！");
+        ImportResult result = new ImportResult();
+        int inserted = 0, skipped = 0;
+        List<String> warnings = new ArrayList<>();
+
+        try (Workbook workbook = ExcelUtils.openWorkbookSafely(file)) {
+            Sheet sheet = workbook.getSheetAt(0);
+            // 关键字放宽为"下限"/"上限"子串，同时命中"口径下限/口径上限"与"口径限制（下限）/（上限）"两类模板表头
+            int headerIdx = ExcelUtils.locateHeaderRow(sheet, new String[]{"line_id", "下限", "上限"}, 10);
+            if (headerIdx < 0) throw new RuntimeException("未找到表头行（需包含 line_id 及口径下限/上限（或\"口径限制(下限/上限)\"）列）！");
+            Row headerRow = sheet.getRow(headerIdx);
+
+            int colId = -1, colWorkshop = -1, colMin = -1, colMax = -1, colStatus = -1, colRemark = -1;
+            for (int j = 0; j < headerRow.getLastCellNum(); j++) {
+                String h = ExcelUtils.getCellStringValue(headerRow.getCell(j)).trim().replaceAll("\\s+", "");
+                if (h.isEmpty()) continue;
+                if (h.contains("line_id") && colId < 0) colId = j;
+                else if (h.contains("workshop_id") && colWorkshop < 0) colWorkshop = j;
+                else if (h.contains("下限") && colMin < 0) colMin = j;
+                else if (h.contains("上限") && colMax < 0) colMax = j;
+                else if (h.contains("status") && colStatus < 0) colStatus = j;
+                else if (h.contains("备注") && colRemark < 0) colRemark = j;
+            }
+
+            for (int i = headerIdx + 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) break;
+                boolean allBlank = true;
+                for (int c = row.getFirstCellNum(); c >= 0 && c < row.getLastCellNum(); c++) {
+                    if (!ExcelUtils.getCellStringValue(row.getCell(c)).isEmpty()) { allBlank = false; break; }
+                }
+                if (allBlank) break;
+
+                String lineId = colId >= 0 ? ExcelUtils.getCellStringValue(row.getCell(colId)).trim() : "";
+                if (lineId.isEmpty()) { skipped++; continue; }
+
+                String caliberLimit = null;
+                if (colMin >= 0 && colMax >= 0) {
+                    String minStr = ExcelUtils.getCellStringValue(row.getCell(colMin)).trim();
+                    String maxStr = ExcelUtils.getCellStringValue(row.getCell(colMax)).trim();
+                    if (!minStr.isEmpty() && !maxStr.isEmpty()) {
+                        String candidate = minStr + "-" + maxStr;
+                        if (CALIBER_LIMIT_PATTERN.matcher(candidate).matches()) {
+                            caliberLimit = candidate;
+                        } else {
+                            warnings.add("第" + (i + 1) + "行：口径范围\"" + candidate + "\"格式非法（要求数字-数字），已置空");
+                        }
+                    }
+                }
+
+                CoexLineStatus line = coexStatusRepo.findById(lineId).orElse(new CoexLineStatus());
+                line.setLineId(lineId);
+                if (colWorkshop >= 0) line.setWorkshopId(ExcelUtils.getCellStringValue(row.getCell(colWorkshop)).trim());
+                if (colStatus >= 0) line.setLineStatus(ExcelUtils.getCellStringValue(row.getCell(colStatus)).trim());
+                line.setCaliberLimit(caliberLimit);
+                line.setEnteredBy("EXCEL_IMPORT");
+                coexStatusRepo.save(line);
+                inserted++;
+            }
+        }
+        result.setTotalRows(inserted + skipped);
+        result.setInsertedCount(inserted);
+        result.setSkippedCount(skipped);
+        String warnText = warnings.isEmpty() ? "" : "；警告 " + warnings.size() + " 条：" + String.join("；", warnings);
+        result.setMessage("📊 共挤产线档案导入完成！导入/更新 " + inserted + " 条，跳过空行 " + skipped + " 条" + warnText);
+        return result;
+    }
+
+    public void exportCoexLines(HttpServletResponse response) throws Exception {
+        List<CoexLineStatus> lines = coexStatusRepo.findAll();
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("共挤产线档案");
+            Row headerRow = sheet.createRow(0);
+            String[] headers = {"line_id", "workshop_id", "口径下限", "口径上限", "line_status", "备注"};
+            CellStyle headerStyle = workbook.createCellStyle(); Font font = workbook.createFont(); font.setBold(true); headerStyle.setFont(font);
+            for (int i = 0; i < headers.length; i++) { Cell cell = headerRow.createCell(i); cell.setCellValue(headers[i]); cell.setCellStyle(headerStyle); }
+
+            int rowIdx = 1;
+            for (CoexLineStatus l : lines) {
+                Row row = sheet.createRow(rowIdx++);
+                row.createCell(0).setCellValue(l.getLineId() != null ? l.getLineId() : "");
+                row.createCell(1).setCellValue(l.getWorkshopId() != null ? l.getWorkshopId() : "");
+                String[] range = splitCaliberLimit(l.getCaliberLimit());
+                if (range[0] != null) row.createCell(2).setCellValue(Double.parseDouble(range[0])); else row.createCell(2).setCellValue("");
+                if (range[1] != null) row.createCell(3).setCellValue(Double.parseDouble(range[1])); else row.createCell(3).setCellValue("");
+                row.createCell(4).setCellValue(l.getLineStatus() != null ? l.getLineStatus() : "");
+                row.createCell(5).setCellValue("");
+            }
+            for (int i = 0; i < headers.length; i++) sheet.autoSizeColumn(i);
+            workbook.write(bos);
+
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=coex_lines.xlsx");
+            response.getOutputStream().write(bos.toByteArray());
+            response.getOutputStream().flush();
+        }
+    }
 }

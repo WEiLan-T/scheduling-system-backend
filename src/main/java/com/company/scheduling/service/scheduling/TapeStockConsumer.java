@@ -74,12 +74,23 @@ public class TapeStockConsumer {
     }
 
     /**
-     * 按带坯零件号做整根贪心消耗（快照日期 FIFO：旧→新）
+     * 按带坯零件号做整根贪心消耗（不做型号规格校验，兼容旧签名）
      *
      * @param tapePartNumber 带坯零件号（ProductProcess.getTapePartNumber()）
      * @param metersNeeded   需求米数
      */
     public ConsumptionResult consume(String tapePartNumber, BigDecimal metersNeeded) {
+        return consume(tapePartNumber, null, metersNeeded);
+    }
+
+    /**
+     * 按带坯零件号做整根贪心消耗（快照日期 FIFO：旧→新），带型号规格一致性校验
+     *
+     * @param tapePartNumber 带坯零件号（ProductProcess.getTapePartNumber()）
+     * @param modelSpec      工艺库带坯型号规格（ProductProcess.getTapeModelSpec()），为 null/空时不做校验保持兼容
+     * @param metersNeeded   需求米数
+     */
+    public ConsumptionResult consume(String tapePartNumber, String modelSpec, BigDecimal metersNeeded) {
         if (metersNeeded == null || metersNeeded.compareTo(BigDecimal.ZERO) <= 0) {
             return new ConsumptionResult(Collections.emptyList(), BigDecimal.ZERO, BigDecimal.ZERO);
         }
@@ -94,6 +105,12 @@ public class TapeStockConsumer {
             if (w.getMachineNo() != null && !w.getMachineNo().isBlank()) continue; // 在产未落库，不计入可用库存
             Integer seq = w.getSplitSeq();
             if (seq != null && seq != 0) continue; // 分切件，仅整根参与消耗
+            // 型号规格一致性校验：proc 侧 modelSpec 为 null/空时不过滤（保持兼容）；
+            // 库存行 modelSpec 为空的旧数据同样保留，仅当两者均非空且不一致时才排除，防止跨规格错配
+            if (modelSpec != null && !modelSpec.isBlank()) {
+                String rowSpec = w.getModelSpec();
+                if (rowSpec != null && !rowSpec.isBlank() && !rowSpec.trim().equals(modelSpec.trim())) continue;
+            }
             BigDecimal meters = w.getStockMeters();
             if (meters == null || meters.compareTo(BigDecimal.ZERO) <= 0) continue;
 

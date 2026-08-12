@@ -40,6 +40,26 @@
         .status-maintenance { background: linear-gradient(135deg, #f59e0b, #d97706); }
         .status-other { background: linear-gradient(135deg, #3b82f6, #2563eb); }
         .legend-dot-item { width: 12px; height: 12px; border-radius: 3px; }
+        /* 需求6：共挤甘特条内换带坯竖线标记 */
+        .gantt-marker {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            margin-left: -1px;
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 0 4px rgba(15, 23, 42, 0.65);
+            cursor: help;
+            z-index: 2;
+            transition: width 0.15s ease, box-shadow 0.15s ease;
+        }
+        .gantt-marker::before { content: ''; position: absolute; top: 0; bottom: 0; left: -5px; width: 12px; } /* 扩大 hover 命中区 */
+        .gantt-marker:hover {
+            width: 4px;
+            margin-left: -2px;
+            background: #ffffff;
+            box-shadow: 0 0 8px rgba(255, 255, 255, 0.95), 0 0 4px rgba(15, 23, 42, 0.5);
+        }
     </style>
 </head>
 <body>
@@ -83,6 +103,10 @@
                         <el-menu-item index="process"><span>⚙️ 工艺路线配置</span></el-menu-item>
                         <el-menu-item index="inquiry"><span>🔮 询单预估</span></el-menu-item>
                         <el-menu-item index="estimation"><span>📊 排产指挥大盘</span></el-menu-item>
+                    </el-menu-item-group>
+                    <el-menu-item-group title="设备与产线档案">
+                        <el-menu-item index="machine-archive"><span>🧶 织造机台档案</span></el-menu-item>
+                        <el-menu-item index="line-archive"><span>🗜️ 共挤产线档案</span></el-menu-item>
                     </el-menu-item-group>
                 </el-menu>
             </div>
@@ -192,7 +216,7 @@
                             <div class="form-section">
                                 <el-row :gutter="20">
                                     <el-col :span="6"><el-form-item label="当班产量(m)"><el-input-number v-model="weavingForm.capacityPerDay" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
-                                    <el-col :span="6"><el-form-item label="标准产能(m)"><el-input-number v-model="weavingForm.standardCapacity" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="6"><el-form-item label="织造标准产能(米/24h)" label-width="145px"><el-input-number v-model="weavingForm.standardCapacity" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
                                     <el-col :span="6"><el-form-item label="标准工时(h)"><el-input-number v-model="weavingForm.standardHours" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
                                     <el-col :span="6"><el-form-item label="需求总量(m)"><el-input-number v-model="weavingForm.totalDemand" :min="0" style="width:100%"></el-input-number></el-form-item></el-col>
                                 </el-row>
@@ -239,16 +263,16 @@
                     <el-card shadow="hover" style="margin-top: 20px;">
                         <div class="filter-bar">
                             <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 数据台账检视：</b>
-                            <el-input v-model="weavingSearch.partNumber" placeholder="检索零件号..." clearable style="width: 180px;"></el-input>
-                            <el-input v-model="weavingSearch.tapeCode" placeholder="检索带坯编号..." clearable style="width: 180px;"></el-input>
-                            <el-input v-model="weavingSearch.machineNo" placeholder="检索生产机台号..." clearable style="width: 180px;"></el-input>
+                            <el-input v-model="weavingKeyword" placeholder="模糊检索: 零件号/带坯编号/型号规格..." clearable style="width: 280px;" @keyup.enter="searchWeaving" @clear="searchWeaving"></el-input>
+                            <el-button type="primary" size="small" @click="searchWeaving">查询</el-button>
+                            <span style="font-size: 12px; color: #94a3b8;">机台/班次可点表头漏斗筛选</span>
                             <el-tag type="info" style="margin-left:auto">共 {{ weavingTotal }} 条</el-tag>
                         </div>
-                        <el-table :data="paginatedWeavingLogs" border stripe size="small" v-loading="loading" style="width: 100%">
+                        <el-table :data="paginatedWeavingLogs" border stripe size="small" v-loading="loading" style="width: 100%" @filter-change="handleWeavingFilterChange">
                             <el-table-column prop="entryDate" label="账期" width="95" fixed></el-table-column>
                             <el-table-column prop="partNumber" label="零件号" width="100" fixed></el-table-column>
                             <el-table-column prop="tapeCode" label="带坯编号" width="95"></el-table-column>
-                            <el-table-column prop="machineNo" label="机台" width="60" align="center"></el-table-column>
+                            <el-table-column prop="machineNo" label="机台" width="60" align="center" :filters="weavingMachineFilterOptions"></el-table-column>
                             <el-table-column prop="modelSpec" label="型号规格" width="130" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="warpThread" label="经线" width="100" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="weftThread" label="纬线" width="120" show-overflow-tooltip></el-table-column>
@@ -258,7 +282,7 @@
                             <el-table-column prop="warpUsageKgPerMeter" label="经耗用(kg/m)" width="100" align="right"></el-table-column>
                             <el-table-column prop="weftUsageKgPerMeter3000D" label="纬耗3000D(kg/m)" width="115" align="right"></el-table-column>
                             <el-table-column prop="weftUsageKgPerMeter2000D" label="纬耗2000D(kg/m)" width="115" align="right"></el-table-column>
-                            <el-table-column prop="shiftType" label="班次" width="60" align="center"><template #default="scope"><el-tag :type="scope.row.shiftType === '白' ? 'warning' : 'info'" size="small">{{ scope.row.shiftType }}班</el-tag></template></el-table-column>
+                            <el-table-column prop="shiftType" label="班次" width="60" align="center" :filters="weavingShiftFilterOptions"><template #default="scope"><el-tag :type="scope.row.shiftType === '白' ? 'warning' : 'info'" size="small">{{ scope.row.shiftType }}班</el-tag></template></el-table-column>
                             <el-table-column prop="workerName" label="姓名" width="80" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="shiftOutput" label="产量(米)" width="90"><template #default="scope"><b style="color: #16a34a;">+ {{ scope.row.shiftOutput }}</b></template></el-table-column>
                             <el-table-column prop="standardCapacity" label="标准产能" width="90"></el-table-column>
@@ -273,7 +297,7 @@
                                 </template>
                             </el-table-column>
                         </el-table>
-                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;"><el-pagination v-model:current-page="weavingPage" :page-size="10" layout="total, prev, pager, next" :total="weavingTotal"></el-pagination></div>
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;"><el-pagination v-model:current-page="weavingPage" v-model:page-size="weavingPageSize" :page-sizes="[10,20,30,50]" layout="total, sizes, prev, pager, next" :total="weavingTotal" @size-change="onWeavingSizeChange" @current-change="onWeavingPageChange"></el-pagination></div>
                     </el-card>
                 </div>
 
@@ -345,17 +369,17 @@
                     <el-card shadow="hover" style="margin-top: 20px;">
                         <div class="filter-bar">
                             <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 数据台账检视：</b>
-                            <el-input v-model="coexSearch.productType" placeholder="筛选: 产品类型" clearable style="width: 140px;"></el-input>
-                            <el-input v-model="coexSearch.productModel" placeholder="筛选: 产品型号" clearable style="width: 150px;"></el-input>
-                            <el-input v-model="coexSearch.machineNo" placeholder="筛选: 机台号" clearable style="width: 130px;"></el-input>
+                            <el-input v-model="coexKeyword" placeholder="模糊检索: 机台号/产品型号/产品类型..." clearable style="width: 280px;" @keyup.enter="searchCoex" @clear="searchCoex"></el-input>
+                            <el-button type="primary" size="small" @click="searchCoex">查询</el-button>
+                            <span style="font-size: 12px; color: #94a3b8;">机台/型号/颜色可点表头漏斗筛选</span>
                             <el-tag type="info" style="margin-left:auto">共 {{ coexTotal }} 条</el-tag>
                         </div>
-                        <el-table :data="paginatedCoexLogs" border stripe size="small" v-loading="loading">
+                        <el-table :data="paginatedCoexLogs" border stripe size="small" v-loading="loading" @filter-change="handleCoexFilterChange">
                             <el-table-column prop="logDate" label="账期" width="90"></el-table-column>
-                            <el-table-column prop="machineNo" label="机台号" width="70" align="center"></el-table-column>
+                            <el-table-column prop="machineNo" label="机台号" width="70" align="center" :filters="coexMachineFilterOptions"></el-table-column>
                             <el-table-column prop="productType" label="产品类型" width="90"></el-table-column>
-                            <el-table-column prop="productModel" label="产品型号" width="110" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="color" label="颜色" width="70"></el-table-column>
+                            <el-table-column prop="productModel" label="产品型号" width="110" show-overflow-tooltip :filters="coexModelFilterOptions"></el-table-column>
+                            <el-table-column prop="color" label="颜色" width="70" :filters="coexColorFilterOptions"></el-table-column>
                             <el-table-column prop="mainMaterial" label="主材" width="100" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="finishedQty" label="成品数量(根)" width="100" align="center"></el-table-column>
                             <el-table-column prop="weightKg" label="重量(Kg)" width="90"></el-table-column>
@@ -370,7 +394,7 @@
                                 </template>
                             </el-table-column>
                         </el-table>
-                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;"><el-pagination v-model:current-page="coexPage" :page-size="10" layout="total, prev, pager, next" :total="coexTotal"></el-pagination></div>
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;"><el-pagination v-model:current-page="coexPage" v-model:page-size="coexPageSize" :page-sizes="[10,20,30,50]" layout="total, sizes, prev, pager, next" :total="coexTotal" @size-change="onCoexSizeChange" @current-change="onCoexPageChange"></el-pagination></div>
                     </el-card>
                 </div>
 
@@ -384,8 +408,8 @@
                         </template>
                         <div style="margin-bottom: 20px; display: flex; justify-content: space-between;">
                             <div style="display: flex; gap: 10px;">
-                                <el-input v-model="invSearchKeyword" placeholder="输入带坯型号回车过滤..." style="width: 300px;" clearable @clear="loadInventory" @keyup.enter="loadInventory"></el-input>
-                                <el-button type="primary" @click="loadInventory">精准检视后台数据</el-button>
+                                <el-input v-model="invSearchKeyword" placeholder="输入带坯型号回车过滤..." style="width: 300px;" clearable @clear="searchInventory" @keyup.enter="searchInventory"></el-input>
+                                <el-button type="primary" @click="searchInventory">精准检视后台数据</el-button>
                                 <el-button type="warning" plain @click="openDailySummary">📈 日库存统计</el-button>
                             </div>
                             <el-button type="success" @click="openAddInv">手工建档入库</el-button>
@@ -446,7 +470,7 @@
                             </el-table>
                         </div>
 
-                        <el-table :data="paginatedInventoryList" border stripe v-loading="invLoading" style="width: 100%">
+                        <el-table :data="paginatedInventoryList" border stripe v-loading="invLoading" style="width: 100%" @filter-change="handleInvFilterChange">
                             <el-table-column type="expand">
                                 <template #default="props">
                                     <div style="padding: 10px 20px; background-color: #f8fafc; border-left: 4px solid #f97316;">
@@ -486,6 +510,9 @@
                             <el-table-column prop="partNumber" label="带坯零件号(总)" width="150">
                                 <template #default="scope"><b>{{ scope.row.partNumber }}</b></template>
                             </el-table-column>
+                            <el-table-column prop="stockTypes" label="库存类型" width="130" align="center" :filters="invStockTypeFilterOptions">
+                                <template #default="scope"><el-tag v-for="t in scope.row.stockTypes" :key="t" size="small" style="margin-right: 4px;">{{ t }}</el-tag></template>
+                            </el-table-column>
                             <el-table-column label="包含批次" width="100" align="center">
                                 <template #default="scope">
                                     <el-tag type="info" size="small">{{ scope.row.batches.length }} 批</el-tag>
@@ -503,7 +530,7 @@
                         </el-table>
 
                         <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
-                            <el-pagination v-model:current-page="invPage" :page-size="10" layout="total, prev, pager, next" :total="invTotal"></el-pagination>
+                            <el-pagination v-model:current-page="invPage" v-model:page-size="invPageSize" :page-sizes="[10,20,30,50]" layout="total, sizes, prev, pager, next" :total="invTotal" @size-change="onInvSizeChange" @current-change="onInvPageChange"></el-pagination>
                         </div>
 
                         <el-dialog :title="invForm.id ? '🛠️ 修正库存档案' : '📦 建立新库存档案'" v-model="invDialogVisible" width="500px">
@@ -582,22 +609,23 @@
 
                         <div class="filter-bar">
                             <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 快速检索：</b>
-                            <el-input v-model="processSearch.finishedPartNumber" placeholder="筛选: 成品零件号" clearable style="width: 200px;"></el-input>
-                            <el-input v-model="processSearch.tapePartNumber" placeholder="筛选: 带坯零件号" clearable style="width: 200px;"></el-input>
+                            <el-input v-model="processKeyword" placeholder="模糊检索: 成品零件号/带坯零件号/规格型号..." clearable style="width: 320px;" @keyup.enter="searchProcess" @clear="searchProcess"></el-input>
+                            <el-button type="primary" size="small" @click="searchProcess">查询</el-button>
+                            <span style="font-size: 12px; color: #94a3b8;">材质类型可点表头漏斗筛选</span>
                             <el-tag type="info" style="margin-left:auto">共筛选出 {{ processTotal }} 条</el-tag>
                         </div>
 
-                        <el-table :data="paginatedProcessList" border stripe size="small" style="width: 100%">
+                        <el-table :data="paginatedProcessList" border stripe size="small" style="width: 100%" @filter-change="handleProcessFilterChange">
                             <el-table-column prop="id" label="工艺ID" width="70" align="center" fixed></el-table-column>
                             <el-table-column prop="finishedPartNumber" label="成品零件号" width="110" fixed></el-table-column>
                             <el-table-column prop="finishedModelSpec" label="成品规格型号" width="130" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="materialType" label="材料类型" width="90"></el-table-column>
+                            <el-table-column prop="materialType" label="材料类型" width="90" :filters="processMaterialFilterOptions"></el-table-column>
                             <el-table-column prop="coexMaxDailyOutput" label="共挤最大日产" width="105" align="right">
                                 <template #default="scope"><el-tag size="small" type="warning" effect="plain">{{ scope.row.coexMaxDailyOutput ?? '-' }}</el-tag></template>
                             </el-table-column>
                             <el-table-column prop="tapePartNumber" label="带坯零件号" width="110"></el-table-column>
                             <el-table-column prop="tapeModelSpec" label="带坯规格型号" width="130" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="weavingStandardDailyOutput" label="织造标准日产" width="105" align="right">
+                            <el-table-column prop="weavingStandardDailyOutput" label="织造标准日产(米/天24h)" width="150" align="right">
                                 <template #default="scope"><el-tag size="small" type="success" effect="plain">{{ scope.row.weavingStandardDailyOutput ?? '-' }}</el-tag></template>
                             </el-table-column>
                             <el-table-column prop="warpSpec" label="经线型号" width="100" show-overflow-tooltip></el-table-column>
@@ -616,7 +644,7 @@
                         </el-table>
 
                         <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
-                            <el-pagination v-model:current-page="processPage" :page-size="10" layout="total, prev, pager, next" :total="processTotal"></el-pagination>
+                            <el-pagination v-model:current-page="processPage" v-model:page-size="processPageSize" :page-sizes="[10,20,30,50]" layout="total, sizes, prev, pager, next" :total="processTotal" @size-change="onProcessSizeChange" @current-change="onProcessPageChange"></el-pagination>
                         </div>
 
                         <!-- ⚙️ 工艺编辑对话框（14业务字段） -->
@@ -629,7 +657,7 @@
                                     <el-col :span="12"><el-form-item label="共挤最大日产"><el-input-number v-model="processForm.coexMaxDailyOutput" :min="0" :precision="2" :controls="false" style="width:100%" placeholder="米/天，可人工核对修改"></el-input-number></el-form-item></el-col>
                                     <el-col :span="12"><el-form-item label="带坯零件号"><el-input v-model="processForm.tapePartNumber" placeholder="必填"></el-input></el-form-item></el-col>
                                     <el-col :span="12"><el-form-item label="带坯规格型号"><el-input v-model="processForm.tapeModelSpec"></el-input></el-form-item></el-col>
-                                    <el-col :span="12"><el-form-item label="织造标准日产"><el-input-number v-model="processForm.weavingStandardDailyOutput" :min="0" :precision="2" :controls="false" style="width:100%" placeholder="米/天，可人工核对修改"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="织造标准日产(米/天24h)"><el-input-number v-model="processForm.weavingStandardDailyOutput" :min="0" :precision="2" :controls="false" style="width:100%" placeholder="米/天(24h口径)，可人工核对修改"></el-input-number></el-form-item></el-col>
                                     <el-col :span="12"><el-form-item label="织造经线型号"><el-input v-model="processForm.warpSpec"></el-input></el-form-item></el-col>
                                     <el-col :span="12"><el-form-item label="纬线型号3000D"><el-input v-model="processForm.weftSpec3000D" placeholder="保存时同步至默认纬线字段"></el-input></el-form-item></el-col>
                                     <el-col :span="12"><el-form-item label="纬线型号2000D"><el-input v-model="processForm.weftSpec2000D"></el-input></el-form-item></el-col>
@@ -642,6 +670,190 @@
                             <template #footer>
                                 <el-button @click="processDialogVisible = false">取消</el-button>
                                 <el-button type="primary" @click="saveProcess" :loading="loading">保存工艺参数</el-button>
+                            </template>
+                        </el-dialog>
+                    </el-card>
+                </div>
+
+                <div v-show="activeMenu === 'machine-archive'">
+                    <el-card shadow="hover" style="border-top: 4px solid #0284c7;">
+                        <template #header>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <b style="font-size: 16px; color: #0284c7;">🧶 织造机台档案库（机台属性与口径约束管理）</b>
+                                <div style="display: flex; gap: 10px;">
+                                    <el-button type="info" size="small" plain @click="exportMachineArchiveExcel">导出 Excel</el-button>
+                                    <input type="file" ref="machineFileRef" style="display: none" @change="handleMachineArchiveImport" accept=".xlsx, .xls, .csv"/>
+                                    <el-button type="warning" size="small" plain @click="$refs.machineFileRef.click()">导入 Excel</el-button>
+                                    <el-button type="success" size="small" @click="openAddMachineArchive">新增机台档案</el-button>
+                                </div>
+                            </div>
+                        </template>
+
+                        <div class="filter-bar">
+                            <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 快速检索：</b>
+                            <el-input v-model="machineArchiveKeyword" placeholder="模糊检索: 机台号/车间/经纬型号/状态/操作工..." clearable style="width: 320px;" @keyup.enter="searchMachineArchive" @clear="searchMachineArchive"></el-input>
+                            <el-button type="primary" size="small" @click="searchMachineArchive">查询</el-button>
+                            <el-tag type="info" style="margin-left:auto">共筛选出 {{ machineArchiveTotal }} 台</el-tag>
+                        </div>
+
+                        <!-- 机台档案导入结果摘要 -->
+                        <div v-if="importResult && lastImportSource === 'machine-archive'" style="margin-bottom: 15px;">
+                            <el-alert :title="importResult.message || '导入完成'" :type="importResult.rejectedCount > 0 ? 'warning' : 'success'" show-icon :closable="false">
+                                <template #default>
+                                    <p style="margin: 4px 0;">总计: {{ importResult.totalRows }} | 新增: {{ importResult.insertedCount }} | 跳过: {{ importResult.skippedCount }} | 拒绝: {{ importResult.rejectedCount }}
+                                        <span v-if="importResult.importBatchId" style="color:#64748b;">（批次: {{ importResult.importBatchId }}）</span></p>
+                                    <p v-if="importResult.qualityReport && importResult.qualityReport.gradeCCount > 0" style="margin: 4px 0; color: #f56c6c;">
+                                        ❌ 拒绝明细({{ importResult.qualityReport.gradeCCount }}条): {{ (importResult.qualityReport.gradeCReasons || []).join('; ') }}
+                                    </p>
+                                </template>
+                            </el-alert>
+                        </div>
+
+                        <el-table :data="paginatedMachineArchiveList" border stripe size="small" style="width: 100%" v-loading="loading">
+                            <el-table-column prop="machineId" label="机台号" width="90" align="center" fixed>
+                                <template #default="scope"><b>{{ scope.row.machineId }}</b></template>
+                            </el-table-column>
+                            <el-table-column label="口径下限" width="90" align="center">
+                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[0] || '-' }}</template>
+                            </el-table-column>
+                            <el-table-column label="口径上限" width="90" align="center">
+                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[1] || '-' }}</template>
+                            </el-table-column>
+                            <el-table-column prop="workshopId" label="所属车间" width="110" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="warpSpec" label="经线型号" width="110" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="weftSpec" label="纬线型号" width="110" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="bobbinCount" label="筒子数" width="80" align="center"></el-table-column>
+                            <el-table-column prop="machineStatus" label="机台状态" width="90" align="center">
+                                <template #default="scope"><el-tag size="small" :type="(scope.row.machineStatus || '').includes('产') ? 'success' : ((scope.row.machineStatus || '').includes('停') ? 'danger' : ((scope.row.machineStatus || '').includes('修') ? 'warning' : 'info'))">{{ scope.row.machineStatus || '空闲' }}</el-tag></template>
+                            </el-table-column>
+                            <el-table-column prop="adjacentMachine" label="相邻机台" width="100" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="operatorName" label="操作工" width="90" show-overflow-tooltip></el-table-column>
+                            <el-table-column label="操作" width="120" align="center" fixed="right">
+                                <template #default="scope">
+                                    <el-button type="primary" size="small" plain @click="openEditMachineArchive(scope.row)">修</el-button>
+                                    <el-button type="danger" size="small" plain @click="deleteMachineArchive(scope.row.machineId)">删</el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                            <el-pagination v-model:current-page="machineArchivePage" v-model:page-size="machineArchivePageSize" :page-sizes="[10,20,30,50]" layout="total, sizes, prev, pager, next" :total="machineArchiveTotal"></el-pagination>
+                        </div>
+
+                        <!-- 🧶 机台档案编辑对话框 -->
+                        <el-dialog :title="machineArchiveEditMode ? '🛠️ 修正机台档案' : '🧶 新增机台档案'" v-model="machineDialogVisible" width="700px">
+                            <el-form :model="machineForm" label-width="110px" size="default">
+                                <el-row :gutter="16">
+                                    <el-col :span="12"><el-form-item label="机台号"><el-input v-model="machineForm.machineId" :disabled="machineArchiveEditMode" placeholder="必填，唯一"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="所属车间"><el-input v-model="machineForm.workshopId" placeholder="如: 织造车间"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="口径下限"><el-input-number v-model="machineForm.caliberMin" :min="0" :controls="false" style="width:100%" placeholder="可留空"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="口径上限"><el-input-number v-model="machineForm.caliberMax" :min="0" :controls="false" style="width:100%" placeholder="可留空"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="经线型号"><el-input v-model="machineForm.warpSpec"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="纬线型号"><el-input v-model="machineForm.weftSpec"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="筒子数"><el-input-number v-model="machineForm.bobbinCount" :min="0" :controls="false" style="width:100%"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="机台状态">
+                                        <el-select v-model="machineForm.machineStatus" filterable allow-create clearable placeholder="选择或输入" style="width:100%">
+                                            <el-option label="在产" value="在产"></el-option>
+                                            <el-option label="空闲" value="空闲"></el-option>
+                                            <el-option label="停机" value="停机"></el-option>
+                                            <el-option label="维修" value="维修"></el-option>
+                                        </el-select>
+                                    </el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="相邻机台"><el-input v-model="machineForm.adjacentMachine"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="操作工"><el-input v-model="machineForm.operatorName"></el-input></el-form-item></el-col>
+                                </el-row>
+                                <el-alert title="口径上下限提交时将拼接为 “下限-上限” 格式存入 caliberLimit，任一留空则清空该约束。" type="info" :closable="false" show-icon style="margin-top: 5px;"></el-alert>
+                            </el-form>
+                            <template #footer>
+                                <el-button @click="machineDialogVisible = false">取消</el-button>
+                                <el-button type="primary" @click="saveMachineArchive" :loading="loading">保存机台档案</el-button>
+                            </template>
+                        </el-dialog>
+                    </el-card>
+                </div>
+
+                <div v-show="activeMenu === 'line-archive'">
+                    <el-card shadow="hover" style="border-top: 4px solid #eab308;">
+                        <template #header>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <b style="font-size: 16px; color: #ca8a04;">🗜️ 共挤产线档案库（产线属性与口径约束管理）</b>
+                                <div style="display: flex; gap: 10px;">
+                                    <el-button type="info" size="small" plain @click="exportLineArchiveExcel">导出 Excel</el-button>
+                                    <input type="file" ref="lineFileRef" style="display: none" @change="handleLineArchiveImport" accept=".xlsx, .xls, .csv"/>
+                                    <el-button type="warning" size="small" plain @click="$refs.lineFileRef.click()">导入 Excel</el-button>
+                                    <el-button type="success" size="small" @click="openAddLineArchive">新增产线档案</el-button>
+                                </div>
+                            </div>
+                        </template>
+
+                        <div class="filter-bar">
+                            <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 快速检索：</b>
+                            <el-input v-model="lineArchiveKeyword" placeholder="模糊检索: 产线号/车间/状态/口径..." clearable style="width: 320px;" @keyup.enter="searchLineArchive" @clear="searchLineArchive"></el-input>
+                            <el-button type="primary" size="small" @click="searchLineArchive">查询</el-button>
+                            <el-tag type="info" style="margin-left:auto">共筛选出 {{ lineArchiveTotal }} 条</el-tag>
+                        </div>
+
+                        <!-- 产线档案导入结果摘要 -->
+                        <div v-if="importResult && lastImportSource === 'line-archive'" style="margin-bottom: 15px;">
+                            <el-alert :title="importResult.message || '导入完成'" :type="importResult.rejectedCount > 0 ? 'warning' : 'success'" show-icon :closable="false">
+                                <template #default>
+                                    <p style="margin: 4px 0;">总计: {{ importResult.totalRows }} | 新增: {{ importResult.insertedCount }} | 跳过: {{ importResult.skippedCount }} | 拒绝: {{ importResult.rejectedCount }}
+                                        <span v-if="importResult.importBatchId" style="color:#64748b;">（批次: {{ importResult.importBatchId }}）</span></p>
+                                    <p v-if="importResult.qualityReport && importResult.qualityReport.gradeCCount > 0" style="margin: 4px 0; color: #f56c6c;">
+                                        ❌ 拒绝明细({{ importResult.qualityReport.gradeCCount }}条): {{ (importResult.qualityReport.gradeCReasons || []).join('; ') }}
+                                    </p>
+                                </template>
+                            </el-alert>
+                        </div>
+
+                        <el-table :data="paginatedLineArchiveList" border stripe size="small" style="width: 100%" v-loading="loading">
+                            <el-table-column prop="lineId" label="产线号" width="100" align="center" fixed>
+                                <template #default="scope"><b>{{ scope.row.lineId }}</b></template>
+                            </el-table-column>
+                            <el-table-column label="口径下限" width="100" align="center">
+                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[0] || '-' }}</template>
+                            </el-table-column>
+                            <el-table-column label="口径上限" width="100" align="center">
+                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[1] || '-' }}</template>
+                            </el-table-column>
+                            <el-table-column prop="workshopId" label="所属车间" width="140" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="lineStatus" label="产线状态" width="110" align="center">
+                                <template #default="scope"><el-tag size="small" :type="(scope.row.lineStatus || '').includes('产') ? 'success' : ((scope.row.lineStatus || '').includes('停') ? 'danger' : ((scope.row.lineStatus || '').includes('修') ? 'warning' : 'info'))">{{ scope.row.lineStatus || '空闲' }}</el-tag></template>
+                            </el-table-column>
+                            <el-table-column label="操作" width="120" align="center" fixed="right">
+                                <template #default="scope">
+                                    <el-button type="primary" size="small" plain @click="openEditLineArchive(scope.row)">修</el-button>
+                                    <el-button type="danger" size="small" plain @click="deleteLineArchive(scope.row.lineId)">删</el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                            <el-pagination v-model:current-page="lineArchivePage" v-model:page-size="lineArchivePageSize" :page-sizes="[10,20,30,50]" layout="total, sizes, prev, pager, next" :total="lineArchiveTotal"></el-pagination>
+                        </div>
+
+                        <!-- 🗜️ 产线档案编辑对话框 -->
+                        <el-dialog :title="lineArchiveEditMode ? '🛠️ 修正产线档案' : '🗜️ 新增产线档案'" v-model="lineDialogVisible" width="560px">
+                            <el-form :model="lineForm" label-width="110px" size="default">
+                                <el-row :gutter="16">
+                                    <el-col :span="12"><el-form-item label="产线号"><el-input v-model="lineForm.lineId" :disabled="lineArchiveEditMode" placeholder="必填，唯一"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="所属车间"><el-input v-model="lineForm.workshopId" placeholder="如: 共挤车间"></el-input></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="口径下限"><el-input-number v-model="lineForm.caliberMin" :min="0" :controls="false" style="width:100%" placeholder="可留空"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="口径上限"><el-input-number v-model="lineForm.caliberMax" :min="0" :controls="false" style="width:100%" placeholder="可留空"></el-input-number></el-form-item></el-col>
+                                    <el-col :span="12"><el-form-item label="产线状态">
+                                        <el-select v-model="lineForm.lineStatus" filterable allow-create clearable placeholder="选择或输入" style="width:100%">
+                                            <el-option label="在产" value="在产"></el-option>
+                                            <el-option label="空闲" value="空闲"></el-option>
+                                            <el-option label="停机" value="停机"></el-option>
+                                            <el-option label="维修" value="维修"></el-option>
+                                        </el-select>
+                                    </el-form-item></el-col>
+                                </el-row>
+                                <el-alert title="口径上下限提交时将拼接为 “下限-上限” 格式存入 caliberLimit，任一留空则清空该约束。" type="info" :closable="false" show-icon style="margin-top: 5px;"></el-alert>
+                            </el-form>
+                            <template #footer>
+                                <el-button @click="lineDialogVisible = false">取消</el-button>
+                                <el-button type="primary" @click="saveLineArchive" :loading="loading">保存产线档案</el-button>
                             </template>
                         </el-dialog>
                     </el-card>
@@ -697,7 +909,14 @@
 
                     <el-card shadow="hover" style="margin-top: 20px;">
                         <template #header><b style="font-size: 15px; color: #475569;">📜 历史销售订单大盘与管理</b></template>
-                        <el-table :data="paginatedOrderList" border stripe size="small">
+                        <div class="filter-bar" style="margin-bottom: 15px;">
+                            <b style="color: #475569; font-size: 14px; margin-right: 5px;">🔍 订单检索：</b>
+                            <el-input v-model="orderKeyword" placeholder="模糊检索: 订单号/零件号/品名/客户..." clearable style="width: 300px;" @keyup.enter="searchOrders" @clear="searchOrders"></el-input>
+                            <el-button type="primary" size="small" @click="searchOrders">查询</el-button>
+                            <span style="font-size: 12px; color: #94a3b8;">成品零件号可点表头漏斗筛选</span>
+                            <el-tag type="info" style="margin-left:auto">共 {{ orderTotal }} 个订单</el-tag>
+                        </div>
+                        <el-table :data="paginatedOrderList" border stripe size="small" @filter-change="handleOrderFilterChange">
                             <el-table-column type="expand">
                                 <template #default="props">
                                     <el-table :data="props.row.items" size="small" border style="margin: 10px; width: 95%;">
@@ -715,6 +934,9 @@
                             </el-table-column>
                             <el-table-column prop="orderId" label="订单统编号">
                                 <template #default="scope"><b>{{ scope.row.orderId }}</b></template>
+                            </el-table-column>
+                            <el-table-column prop="partNumbers" label="成品零件号" width="170" :filters="orderPartFilterOptions">
+                                <template #default="scope"><span style="font-size: 12px;">{{ (scope.row.items || []).map(i => i.finishedPartNumber).filter(Boolean).join('、') || '-' }}</span></template>
                             </el-table-column>
                             <el-table-column prop="customerName" label="客户名称"></el-table-column>
                             <el-table-column prop="salesperson" label="销售员"></el-table-column>
@@ -748,7 +970,7 @@
                         </el-table>
 
                         <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
-                            <el-pagination v-model:current-page="orderPage" :page-size="10" layout="total, prev, pager, next" :total="orderTotal"></el-pagination>
+                            <el-pagination v-model:current-page="orderPage" v-model:page-size="orderPageSize" :page-sizes="[10,20,30,50]" layout="total, sizes, prev, pager, next" :total="orderTotal" @size-change="onOrderSizeChange" @current-change="onOrderPageChange"></el-pagination>
                         </div>
                     </el-card>
                 </div>
@@ -765,6 +987,11 @@
                             <el-form-item label="加载销售订单号"><el-input v-model="estForm.orderId" placeholder="输入订单统编号..."></el-input></el-form-item>
                             <el-form-item label="交期全局缓冲(天)"><el-input-number v-model="estForm.globalBufferDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
                             <el-form-item label="织造提前结束(天)"><el-input-number v-model="estForm.weavingAdvanceDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
+                            <el-form-item label="织造储备(天)">
+                                <el-tooltip placement="top" effect="dark" content="共挤开工前需提前储备的带坯天数：储备米数 = 共挤最大日产 × 天数，织造相应提前 ceil(储备米数 ÷ 织造日产) 天开工。0 为不储备（与现状排产一致）">
+                                    <el-input-number v-model="estForm.weavingReserveDays" :min="0" style="width: 130px;"></el-input-number>
+                                </el-tooltip>
+                            </el-form-item>
                             <el-form-item><el-button type="success" @click="fetchInitialDraft" :loading="loading" icon="Operation">开启逆向推演</el-button></el-form-item>
                         </el-form>
                         <div style="margin: 15px 0; display: flex; align-items: center; gap: 15px;">
@@ -782,6 +1009,12 @@
                                 <el-alert :title="`🎯 订单 ${estResult.orderId} 草稿就绪！推演时间跨度: ${estResult.overallStartDate.replace('T',' ')} 至 ${estResult.overallEndDate.replace('T',' ')}`" type="info" show-icon style="width: 75%;"></el-alert>
                                 <el-button type="danger" size="large" @click="commitFinalScheduleToDb">✅ 签发排产单并正式落库</el-button>
                                 <el-button type="warning" size="large" @click="applyManualAdjustments" :loading="loading" plain>🔄 应用人工调整并重新推演</el-button>
+                            </div>
+
+                            <!-- 口径候选为空等冲突告警（后端 conflictWarnings 键透传，有内容才显示） -->
+                            <div v-if="estResult.conflictWarnings && estResult.conflictWarnings.length > 0" style="margin-bottom: 15px;">
+                                <el-alert v-for="(warn, wIdx) in estResult.conflictWarnings" :key="wIdx"
+                                          :title="'⚠️ ' + warn" type="warning" show-icon :closable="false" style="margin-bottom: 8px;"></el-alert>
                             </div>
 
                             <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 25px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">
@@ -815,6 +1048,10 @@
                                                     </div>
                                                 </template>
                                                 <span>{{ task.label }}</span>
+                                            </el-tooltip>
+                                            <!-- 需求6：换带坯切换时点竖线标记 -->
+                                            <el-tooltip v-for="(ev, evIdx) in task.events" :key="'tc' + evIdx" placement="top" effect="light" :content="ev.tip">
+                                                <div class="gantt-marker" :style="{ left: ev.left }"></div>
                                             </el-tooltip>
                                         </div>
                                     </div>
@@ -854,6 +1091,16 @@
                                         <template #default="scope">
                                             经纬：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>
                                             需织 {{ scope.row.tapeMetersNeed?.toFixed(0) }} m
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="织造储备" width="150">
+                                        <template #default="scope">
+                                            <template v-if="scope.row.reserveAdvanceDays > 0">
+                                                <el-tooltip placement="top" effect="dark" :content="`共挤开工前储备 ${scope.row.reserveMeters?.toFixed(0)} m 带坯，织造提前 ${scope.row.reserveAdvanceDays} 天开工`">
+                                                    <el-tag size="small" type="warning" effect="plain">{{ scope.row.reserveMeters?.toFixed(0) }} m / 提前{{ scope.row.reserveAdvanceDays }}天</el-tag>
+                                                </el-tooltip>
+                                            </template>
+                                            <span v-else style="color:#94a3b8; font-size:12px;">—（未储备）</span>
                                         </template>
                                     </el-table-column>
                                 </el-table>
@@ -922,6 +1169,11 @@
                                 <el-form-item label="拟生产天数"><el-input-number v-model="inquiryForm.plannedProductionDays" :min="1" :max="365" style="width: 140px;"></el-input-number></el-form-item>
                                 <el-form-item label="缓冲天数"><el-input-number v-model="inquiryForm.globalBufferDays" :min="0" style="width: 120px;"></el-input-number></el-form-item>
                                 <el-form-item label="织造提前(天)"><el-input-number v-model="inquiryForm.weavingAdvanceDays" :min="0" style="width: 120px;"></el-input-number></el-form-item>
+                                <el-form-item label="织造储备(天)">
+                                    <el-tooltip placement="top" effect="dark" content="共挤开工前需提前储备的带坯天数：储备米数 = 共挤最大日产 × 天数，织造相应提前开工。0 为不储备（与现状一致）">
+                                        <el-input-number v-model="inquiryForm.weavingReserveDays" :min="0" style="width: 120px;"></el-input-number>
+                                    </el-tooltip>
+                                </el-form-item>
                                 <el-form-item><el-button type="warning" @click="fetchInquiry" :loading="loading" icon="Search">开始预估计算</el-button></el-form-item>
                             </el-form>
                         </div>
@@ -942,6 +1194,37 @@
                         <div v-if="inquiryResult">
                             <el-alert :title="`🎯 预估结果：拟生产 ${inquiryResult.plannedProductionDays} 天，推荐织造机台 ${inquiryResult.recommendedMachineCount} 台、共挤产线 ${inquiryResult.recommendedLineCount} 条，时间跨度: ${inquiryResult.overallStartDate?.replace('T',' ')} 至 ${inquiryResult.overallEndDate?.replace('T',' ')}`" type="warning" show-icon style="margin-bottom: 15px;"></el-alert>
 
+                            <!-- 口径候选为空等冲突告警（后端 conflictWarnings 键透传，有内容才显示） -->
+                            <div v-if="inquiryResult.conflictWarnings && inquiryResult.conflictWarnings.length > 0" style="margin-bottom: 15px;">
+                                <el-alert v-for="(warn, wIdx) in inquiryResult.conflictWarnings" :key="wIdx"
+                                          :title="'⚠️ ' + warn" type="warning" show-icon :closable="false" style="margin-bottom: 8px;"></el-alert>
+                            </div>
+
+                            <!-- 🎛️ 任务#24：资源数量独立调整（每个询单条目一组，修改后 500ms 防抖自动重算） -->
+                            <el-card shadow="never" style="margin-bottom: 15px; border-left: 4px solid #f59e0b;">
+                                <template #header><b style="color: #b45309;">🎛️ 资源数量独立调整（修改后自动防抖重算，支持任意 N:M 组合）</b></template>
+                                <el-table :data="inquiryResCounts" border size="small" style="width: 100%">
+                                    <el-table-column prop="finishedPartNumber" label="成品零件号" width="160">
+                                        <template #default="scope"><b>{{ scope.row.finishedPartNumber }}</b></template>
+                                    </el-table-column>
+                                    <el-table-column label="织造机台数" width="170">
+                                        <template #default="scope">
+                                            <el-input-number v-model="scope.row.machineCount" :min="1" size="small" style="width:100%;" :controls="true" @change="debouncedInquiryRecalc"></el-input-number>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="共挤产线数" width="170">
+                                        <template #default="scope">
+                                            <el-input-number v-model="scope.row.lineCount" :min="1" size="small" style="width:100%;" :controls="true" @change="debouncedInquiryRecalc"></el-input-number>
+                                        </template>
+                                    </el-table-column>
+                                    <el-table-column label="当前推荐值提示">
+                                        <template #default>
+                                            <span style="font-size: 12px; color: #64748b;">系统推荐：织造 <b style="color:#0284c7;">{{ inquiryResult.recommendedMachineCount }}</b> 台 / 共挤 <b style="color:#ca8a04;">{{ inquiryResult.recommendedLineCount }}</b> 条（超出候选数部分将待指派并告警）</span>
+                                        </template>
+                                    </el-table-column>
+                                </el-table>
+                            </el-card>
+
                             <!-- 甘特图 -->
                             <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 25px;">
                                 <div style="display: flex; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 8px;">
@@ -958,7 +1241,8 @@
                                         {{ row.label }}
                                     </div>
                                     <div style="flex-grow: 1; position: relative; height: 100%; background: #f8fafc;">
-                                        <div v-for="task in row.tasks" :key="task.finishedPartNumber + task.typeStr"
+                                        <!-- 任务#24：资源行拆分后同一成品可能多行，改用 uid 作为唯一 key（保留旧 key 兜底） -->
+                                        <div v-for="task in row.tasks" :key="task.uid || (task.finishedPartNumber + task.typeStr)"
                                              :style="{ left: task.left, width: task.width, backgroundColor: task.color }"
                                              style="position: absolute; height: 30px; top: 8px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.15); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 0 5px;">
                                             <el-tooltip placement="top" effect="light">
@@ -974,12 +1258,16 @@
                                                 </template>
                                                 <span>{{ task.label }}</span>
                                             </el-tooltip>
+                                            <!-- 需求6：换带坯切换时点竖线标记 -->
+                                            <el-tooltip v-for="(ev, evIdx) in task.events" :key="'tc' + evIdx" placement="top" effect="light" :content="ev.tip">
+                                                <div class="gantt-marker" :style="{ left: ev.left }"></div>
+                                            </el-tooltip>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
-                            <!-- 资源调整表格 -->
+                            <!-- 资源调整表格（任务#24：details 已为资源行，allocationType 区分织造/共挤行） -->
                             <el-table :data="inquiryResult.details" border size="small" style="width: 100%">
                                 <el-table-column label="成品/带坯" width="160">
                                     <template #default="scope">
@@ -987,25 +1275,47 @@
                                         <span style="color: #64748b; font-size:11px;">{{ scope.row.tapePartNumber }}</span>
                                     </template>
                                 </el-table-column>
+                                <el-table-column label="类型" width="80" align="center">
+                                    <template #default="scope">
+                                        <el-tag v-if="scope.row.allocationType === 'coex'" type="warning" size="small">共挤</el-tag>
+                                        <el-tag v-else type="primary" size="small">织造</el-tag>
+                                    </template>
+                                </el-table-column>
                                 <el-table-column label="🧶 织造机台指派" width="200">
                                     <template #default="scope">
-                                        <el-select v-if="scope.row.weavingStart" v-model="scope.row.plannedMachine" size="small" placeholder="选择机台..." style="width:100%" clearable>
-                                            <el-option v-for="m in machineList" :key="m.machineId" :label="'机台' + m.machineId + (m.caliberLimit ? ' [' + m.caliberLimit + ']' : '')" :value="m.machineId"></el-option>
-                                        </el-select>
-                                        <el-tag v-else type="success" size="small">库存满足</el-tag>
+                                        <template v-if="scope.row.allocationType !== 'coex'">
+                                            <el-select v-if="scope.row.weavingStart" v-model="scope.row.plannedMachine" size="small" placeholder="选择机台..." style="width:100%" clearable @change="onInquiryAssignChange(scope.row)">
+                                                <el-option v-for="m in machineList" :key="m.machineId" :label="'机台' + m.machineId + (m.caliberLimit ? ' [' + m.caliberLimit + ']' : '')" :value="m.machineId"></el-option>
+                                            </el-select>
+                                            <el-tag v-else type="success" size="small">库存满足</el-tag>
+                                        </template>
+                                        <span v-else style="color:#94a3b8; font-size:12px;">—（共挤行）</span>
                                     </template>
                                 </el-table-column>
                                 <el-table-column label="🗜️ 共挤产线指派" width="200">
                                     <template #default="scope">
-                                        <el-select v-model="scope.row.plannedLine" size="small" placeholder="选择产线..." style="width:100%" clearable>
-                                            <el-option v-for="l in lineList" :key="l.lineId" :label="'产线' + l.lineId + (l.caliberLimit ? ' [' + l.caliberLimit + ']' : '')" :value="l.lineId"></el-option>
-                                        </el-select>
+                                        <template v-if="scope.row.allocationType === 'coex'">
+                                            <el-select v-model="scope.row.plannedLine" size="small" placeholder="选择产线..." style="width:100%" clearable @change="onInquiryAssignChange(scope.row)">
+                                                <el-option v-for="l in lineList" :key="l.lineId" :label="'产线' + l.lineId + (l.caliberLimit ? ' [' + l.caliberLimit + ']' : '')" :value="l.lineId"></el-option>
+                                            </el-select>
+                                        </template>
+                                        <span v-else style="color:#94a3b8; font-size:12px;">—（织造行）</span>
                                     </template>
                                 </el-table-column>
                                 <el-table-column label="工艺约束" width="190" show-overflow-tooltip>
                                     <template #default="scope">
-                                        经纬：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>
-                                        需织 {{ scope.row.tapeMetersNeed?.toFixed(0) }} m | 需挤 {{ scope.row.finishedMeters?.toFixed(0) }} m
+                                        <template v-if="scope.row.allocationType === 'coex'">需挤 {{ scope.row.finishedMeters?.toFixed(0) }} m</template>
+                                        <template v-else>经纬：{{ scope.row.warpSpec }} / {{ scope.row.weftSpec }}<br/>需织 {{ scope.row.tapeMetersNeed?.toFixed(0) }} m</template>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="织造储备" width="150">
+                                    <template #default="scope">
+                                        <template v-if="scope.row.reserveAdvanceDays > 0">
+                                            <el-tooltip placement="top" effect="dark" :content="`共挤开工前储备 ${scope.row.reserveMeters?.toFixed(0)} m 带坯，织造提前 ${scope.row.reserveAdvanceDays} 天开工`">
+                                                <el-tag size="small" type="warning" effect="plain">{{ scope.row.reserveMeters?.toFixed(0) }} m / 提前{{ scope.row.reserveAdvanceDays }}天</el-tag>
+                                            </el-tooltip>
+                                        </template>
+                                        <span v-else style="color:#94a3b8; font-size:12px;">—（未储备）</span>
                                     </template>
                                 </el-table-column>
                                 <el-table-column label="消耗库存带坯清单" min-width="210">
@@ -1254,6 +1564,10 @@
                                                         </template>
                                                         <span>{{ task.label }}</span>
                                                     </el-tooltip>
+                                                    <!-- 需求6：换带坯切换时点竖线标记 -->
+                                                    <el-tooltip v-for="(ev, evIdx) in task.events" :key="'tc' + evIdx" placement="top" effect="light" :content="ev.tip">
+                                                        <div class="gantt-marker" :style="{ left: ev.left }"></div>
+                                                    </el-tooltip>
                                                 </div>
                                             </div>
                                         </div>
@@ -1272,6 +1586,14 @@
                                         <el-table-column label="共挤排期">
                                             <template #default="scope">
                                                 {{ scope.row.coexStart?.replace('T',' ') }} ~ {{ scope.row.coexEnd?.replace('T',' ') }}
+                                            </template>
+                                        </el-table-column>
+                                        <el-table-column label="织造储备" width="150">
+                                            <template #default="scope">
+                                                <template v-if="scope.row.reserveAdvanceDays > 0">
+                                                    <el-tag size="small" type="warning" effect="plain">{{ scope.row.reserveMeters?.toFixed(0) }} m / 提前{{ scope.row.reserveAdvanceDays }}天</el-tag>
+                                                </template>
+                                                <span v-else style="color:#94a3b8; font-size:12px;">—</span>
                                             </template>
                                         </el-table-column>
                                         <el-table-column prop="plannedMachine" label="指派机台" width="100">

@@ -14,6 +14,7 @@ public class ScheduleAdjustmentRequest {
     // 🌟 新增：人工调整接口（全局配置）
     private Integer globalBufferDays = 3;     // 默认所有订单留出 3 天缓冲期
     private Integer weavingAdvanceDays = 2;   // 默认织造比共挤提前 2 天结束
+    private Integer weavingReserveDays;        // 织造储备库存天数（null/0 = 不储备，与现状完全一致）
 
     @Data
     public static class ItemAdjustment {

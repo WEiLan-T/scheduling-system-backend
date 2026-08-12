@@ -15,7 +15,8 @@ import java.time.LocalDateTime;
         @UniqueConstraint(name = "uk_warehouse", columnNames = {"part_number", "tape_code", "snapshot_date"})
 }, indexes = {
         @Index(name = "idx_warehouse_snapshot_date", columnList = "snapshot_date"),
-        @Index(name = "idx_warehouse_pn_tc_date", columnList = "part_number, tape_code, snapshot_date")
+        @Index(name = "idx_warehouse_pn_tc_date", columnList = "part_number, tape_code, snapshot_date"),
+        @Index(name = "idx_warehouse_pn_machine_no", columnList = "part_number, machine_no")
 })
 public class VirtualWarehouse {
     @Id

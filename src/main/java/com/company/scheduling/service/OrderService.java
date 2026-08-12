@@ -4,6 +4,8 @@ import com.company.scheduling.domain.ProductionOrder;
 import com.company.scheduling.repository.ProductionOrderRepo;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -24,6 +26,14 @@ public class OrderService {
     public OrderService(ProductionOrderRepo orderRepo) { this.orderRepo = orderRepo; }
 
     public List<ProductionOrder> getAllOrders() { return orderRepo.findAllByOrderByCreatedAtDesc(); }
+
+    /** 分页搜索订单（新增，不影响上方旧全量方法；page 从 0 开始，排序与旧接口一致 createdAt 倒序，已内联在 native SQL 的 ORDER BY 中） */
+    public Page<ProductionOrder> searchOrders(int page, int size, String keyword, String orderId, String finishedPartNumber) {
+        String kw = (keyword == null || keyword.trim().isEmpty()) ? null : keyword.trim();
+        String oid = (orderId == null || orderId.trim().isEmpty()) ? null : orderId.trim();
+        String fpn = (finishedPartNumber == null || finishedPartNumber.trim().isEmpty()) ? null : finishedPartNumber.trim();
+        return orderRepo.search(kw, oid, fpn, PageRequest.of(page, size));
+    }
 
     @Transactional
     public String saveOrders(List<ProductionOrder> orders, String currentUser) {

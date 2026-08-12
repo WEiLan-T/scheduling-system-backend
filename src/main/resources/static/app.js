@@ -45,6 +45,9 @@ const app = createApp({
             return (e && e.message) || '操作失败';
         };
 
+        // 🌟 通用表头筛选选项构建：去重 + 排序 + 转 {text, value} 数组
+        const distinctFilterOptions = (values) => Array.from(new Set((values || []).filter(v => v != null && String(v).trim() !== ''))).sort().map(v => ({ text: String(v), value: v }));
+
         const isLoggedIn = ref(false);
         const currentUser = ref('');
         const activeMenu = ref('order-dashboard');
@@ -108,9 +111,11 @@ const app = createApp({
 
         const refreshCurrentPage = () => {
             if (activeMenu.value === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); ElMessage.success('🔄 厂区数字孪生快照已更新'); }
-            else if (activeMenu.value === 'weaving') { loadWeavingLogs(); ElMessage.success('🔄 织造历史台账同步刷新完成'); }
-            else if (activeMenu.value === 'process') { loadProcesses(); ElMessage.success('🔄 工艺路线参数配置库已同步刷新'); }
-            else if (activeMenu.value === 'coex') { loadCoexLogs(); ElMessage.success('🔄 共挤历史台账同步刷新完成'); }
+            else if (activeMenu.value === 'weaving') { loadWeavingPage(); ElMessage.success('🔄 织造历史台账同步刷新完成'); }
+            else if (activeMenu.value === 'process') { loadProcesses(); loadProcessPage(); ElMessage.success('🔄 工艺路线参数配置库已同步刷新'); }
+            else if (activeMenu.value === 'machine-archive') { loadMachinesAndLines(); ElMessage.success('🔄 织造机台档案已刷新'); }
+            else if (activeMenu.value === 'line-archive') { loadMachinesAndLines(); ElMessage.success('🔄 共挤产线档案已刷新'); }
+            else if (activeMenu.value === 'coex') { loadCoexPage(); ElMessage.success('🔄 共挤历史台账同步刷新完成'); }
             else if (activeMenu.value === 'inventory') { loadInventory(); loadReconciliationReport(); ElMessage.success('🔄 虚拟分批库存大盘已刷新'); }
             else if (activeMenu.value === 'order') { loadOrders(); ElMessage.success('🔄 销售合同档案订单库已刷新'); }
             else if (activeMenu.value === 'order-dashboard') { loadOrders(); ElMessage.success('🔄 订单交期全景大盘已更新'); }
@@ -130,21 +135,14 @@ const app = createApp({
         // 🧶 织造车间 MES
         // ==========================================
         const weavingLogList = ref([]); const weavingFileRef = ref(null);
-        const weavingSearch = reactive({ partNumber: '', tapeCode: '', machineNo: '' });
-        const weavingPage = ref(1);
-        const filteredWeavingLogs = computed(() => {
-            return weavingLogList.value.filter(item => {
-                return (!(weavingSearch.partNumber) || (item.partNumber || '').includes(weavingSearch.partNumber)) &&
-                    (!(weavingSearch.tapeCode) || (item.tapeCode || '').includes(weavingSearch.tapeCode)) &&
-                    (!(weavingSearch.machineNo) || String(item.machineNo ?? '').includes(weavingSearch.machineNo));
-            });
-        });
-        const paginatedWeavingLogs = computed(() => {
-            const start = (weavingPage.value - 1) * 10;
-            return filteredWeavingLogs.value.slice(start, start + 10);
-        });
-        const weavingTotal = computed(() => filteredWeavingLogs.value.length);
-        watch(weavingSearch, () => { weavingPage.value = 1; }, { deep: true });
+        // 🌟 服务端分页 + 表头筛选状态（契约：keyword 模糊匹配 partNumber/tapeCode/modelSpec，筛选列 machineNo/shiftType）
+        const weavingKeyword = ref('');
+        const weavingFilters = reactive({ machineNo: null, shiftType: null });
+        const weavingPage = ref(1); const weavingPageSize = ref(10); const weavingTotal = ref(0);
+        const paginatedWeavingLogs = ref([]);
+        // 表头筛选选项：机台号取自机台档案，班次为静态枚举
+        const weavingMachineFilterOptions = computed(() => machineList.value.map(m => ({ text: '机台 ' + m.machineId + '#', value: Number(cleanId(m.machineId)) })).filter(f => !isNaN(f.value)));
+        const weavingShiftFilterOptions = [{ text: '白班', value: '白' }, { text: '夜班', value: '夜' }];
 
         const weavingForm = reactive({
             id: null, entryDate: getToday(), machineId: '', tapePartNumber: '', tapeNumber: '',
@@ -167,6 +165,8 @@ const app = createApp({
                     if (weavingForm.warpWeightPerMeter == null && proc.warpWeightPerMeter != null) weavingForm.warpWeightPerMeter = proc.warpWeightPerMeter;
                     if (weavingForm.weftWeightPerMeter3000D == null && proc.weftWeightPerMeter3000D != null) weavingForm.weftWeightPerMeter3000D = proc.weftWeightPerMeter3000D;
                     if (weavingForm.weftWeightPerMeter2000D == null && proc.weftWeightPerMeter2000D != null) weavingForm.weftWeightPerMeter2000D = proc.weftWeightPerMeter2000D;
+                    // 织造标准产能(米/24h)从工艺库自动带出，仅赋值不锁定，用户仍可手改
+                    if (proc.weavingStandardDailyOutput != null) weavingForm.standardCapacity = proc.weavingStandardDailyOutput;
                 }
             }
         });
@@ -187,7 +187,27 @@ const app = createApp({
         });
 
         const loadWeavingLogs = async () => { try { const res = await axios.get('/api/v1/workshops/integration/weaving/logs/list', { skipErrorHandler: true }); weavingLogList.value = res.data; } catch (e) { ElMessage.error(errMsg(e)); } };
-        const submitWeaving = async () => { loading.value = true; try { const res = await axios.post('/api/v1/workshops/integration/weaving/logs', weavingForm, { skipErrorHandler: true }); ElMessage.success(res.data); loadWeavingLogs(); resetWeavingForm(); } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; } };
+        // 🌟 织造台账列表页：服务端分页查询（page 从 0 开始，返回 {content, totalElements, totalPages}）
+        const loadWeavingPage = async () => {
+            try {
+                const params = { page: weavingPage.value - 1, size: weavingPageSize.value };
+                if (weavingKeyword.value && weavingKeyword.value.trim()) params.keyword = weavingKeyword.value.trim();
+                if (weavingFilters.machineNo != null && weavingFilters.machineNo !== '') params.machineNo = weavingFilters.machineNo;
+                if (weavingFilters.shiftType) params.shiftType = weavingFilters.shiftType;
+                const res = await axios.get('/api/v1/workshops/integration/weaving/logs/list', { params, skipErrorHandler: true });
+                const data = res.data || {};
+                paginatedWeavingLogs.value = Array.isArray(data.content) ? data.content : [];
+                weavingTotal.value = data.totalElements || 0;
+            } catch (e) { ElMessage.error(errMsg(e)); }
+        };
+        const searchWeaving = () => { weavingPage.value = 1; loadWeavingPage(); };
+        const handleWeavingFilterChange = ({ property, filters }) => {
+            if (property === 'machineNo' || property === 'shiftType') weavingFilters[property] = (filters && filters.length > 0) ? filters[0] : null;
+            weavingPage.value = 1; loadWeavingPage();
+        };
+        const onWeavingSizeChange = () => { weavingPage.value = 1; loadWeavingPage(); };
+        const onWeavingPageChange = () => { loadWeavingPage(); };
+        const submitWeaving = async () => { loading.value = true; try { const res = await axios.post('/api/v1/workshops/integration/weaving/logs', weavingForm, { skipErrorHandler: true }); ElMessage.success(res.data); loadWeavingPage(); resetWeavingForm(); } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; } };
         const openEditWeaving = (row) => {
             // 台账实体新字段名 → 手工录入表单字段名映射（后端DTO仍使用旧字段名）
             Object.assign(weavingForm, row, {
@@ -199,7 +219,7 @@ const app = createApp({
             });
             window.scrollTo({ top: 0, behavior: 'smooth' });
         };
-        const deleteWeaving = async (id) => { try { await ElMessageBox.confirm('撤销台账将自动回扣并同步冲减库存，是否继续？', '高危生产警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/weaving/logs/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadWeavingLogs(); if (weavingForm.id === id) resetWeavingForm(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
+        const deleteWeaving = async (id) => { try { await ElMessageBox.confirm('撤销台账将自动回扣并同步冲减库存，是否继续？', '高危生产警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/weaving/logs/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadWeavingPage(); if (weavingForm.id === id) resetWeavingForm(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
 
         const exportWeavingExcel = async () => { try { const res = await axios.get('/api/v1/workshops/integration/weaving/export', { responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '织造车间产能明细汇总.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
         const handleWeavingImport = async (e) => {
@@ -210,7 +230,7 @@ const app = createApp({
                 const res = await axios.post('/api/v1/workshops/integration/weaving/import', fd, { headers: { 'Content-Type': 'multipart/form-data' }, skipErrorHandler: true });
                 importResult.value = res.data; lastImportSource.value = 'weaving';
                 ElMessage.success(res.data.message || '导入完成');
-                loadWeavingLogs();
+                loadWeavingPage();
             } catch (err) { ElMessage.error(errMsg(err)); } finally { loading.value = false; e.target.value = ''; }
         };
 
@@ -220,7 +240,7 @@ const app = createApp({
                 const res = await axios.post('/api/v1/workshops/integration/data-quality/recheck', null, { skipErrorHandler: true });
                 const weaving = (res.data && res.data.weaving) || {};
                 ElMessage.success(`B级数据重检完成：重检 ${weaving.totalGradeB ?? 0} 条，升级A级 ${weaving.upgradedToA ?? 0} 条`);
-                loadWeavingLogs();
+                loadWeavingPage();
             } catch (e) { ElMessage.error(errMsg(e)); }
         };
 
@@ -228,21 +248,15 @@ const app = createApp({
         // 🗜️ 共挤车间 MES
         // ==========================================
         const coexLogList = ref([]); const coexFileRef = ref(null);
-        const coexSearch = reactive({ productType: '', productModel: '', machineNo: '' });
-        const coexPage = ref(1);
-        const filteredCoexLogs = computed(() => {
-            return coexLogList.value.filter(item => {
-                return (!(coexSearch.productType) || (item.productType || '').includes(coexSearch.productType)) &&
-                    (!(coexSearch.productModel) || (item.productModel || '').includes(coexSearch.productModel)) &&
-                    (!(coexSearch.machineNo) || String(item.machineNo ?? '').includes(coexSearch.machineNo));
-            });
-        });
-        const paginatedCoexLogs = computed(() => {
-            const start = (coexPage.value - 1) * 10;
-            return filteredCoexLogs.value.slice(start, start + 10);
-        });
-        const coexTotal = computed(() => filteredCoexLogs.value.length);
-        watch(coexSearch, () => { coexPage.value = 1; }, { deep: true });
+        // 🌟 服务端分页 + 表头筛选状态（契约：keyword 模糊匹配 machineNo/productModel/productType，筛选列 machineNo/productModel/color）
+        const coexKeyword = ref('');
+        const coexFilters = reactive({ machineNo: null, productModel: null, color: null });
+        const coexPage = ref(1); const coexPageSize = ref(10); const coexTotal = ref(0);
+        const paginatedCoexLogs = ref([]);
+        // 表头筛选选项：机台号取自产线档案，型号/颜色取自已加载台账数据
+        const coexMachineFilterOptions = computed(() => lineList.value.map(l => ({ text: l.lineId + '号线', value: l.lineId })));
+        const coexModelFilterOptions = computed(() => distinctFilterOptions(coexLogList.value.map(i => i.productModel)));
+        const coexColorFilterOptions = computed(() => distinctFilterOptions(coexLogList.value.map(i => i.color)));
 
         const coexForm = reactive({
             id: null, entryDate: getToday(), lineId: '', orderNumber: '',
@@ -282,7 +296,28 @@ const app = createApp({
         });
 
         const loadCoexLogs = async () => { try { const res = await axios.get('/api/v1/workshops/integration/coextrusion/logs/list', { skipErrorHandler: true }); coexLogList.value = res.data; } catch (e) { ElMessage.error(errMsg(e)); } };
-        const submitCoex = async () => { loading.value = true; try { const res = await axios.post('/api/v1/workshops/integration/coextrusion/logs', coexForm, { skipErrorHandler: true }); ElMessage.success(res.data); loadCoexLogs(); resetCoexForm(); } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; } };
+        // 🌟 共挤台账列表页：服务端分页查询
+        const loadCoexPage = async () => {
+            try {
+                const params = { page: coexPage.value - 1, size: coexPageSize.value };
+                if (coexKeyword.value && coexKeyword.value.trim()) params.keyword = coexKeyword.value.trim();
+                if (coexFilters.machineNo != null && coexFilters.machineNo !== '') params.machineNo = coexFilters.machineNo;
+                if (coexFilters.productModel) params.productModel = coexFilters.productModel;
+                if (coexFilters.color) params.color = coexFilters.color;
+                const res = await axios.get('/api/v1/workshops/integration/coextrusion/logs/list', { params, skipErrorHandler: true });
+                const data = res.data || {};
+                paginatedCoexLogs.value = Array.isArray(data.content) ? data.content : [];
+                coexTotal.value = data.totalElements || 0;
+            } catch (e) { ElMessage.error(errMsg(e)); }
+        };
+        const searchCoex = () => { coexPage.value = 1; loadCoexPage(); };
+        const handleCoexFilterChange = ({ property, filters }) => {
+            if (property === 'machineNo' || property === 'productModel' || property === 'color') coexFilters[property] = (filters && filters.length > 0) ? filters[0] : null;
+            coexPage.value = 1; loadCoexPage();
+        };
+        const onCoexSizeChange = () => { coexPage.value = 1; loadCoexPage(); };
+        const onCoexPageChange = () => { loadCoexPage(); };
+        const submitCoex = async () => { loading.value = true; try { const res = await axios.post('/api/v1/workshops/integration/coextrusion/logs', coexForm, { skipErrorHandler: true }); ElMessage.success(res.data); loadCoexPage(); resetCoexForm(); } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; } };
         const openEditCoex = (row) => {
             // 台账实体新字段名 → 手工录入表单字段名映射（后端DTO仍使用旧字段名）
             Object.assign(coexForm, row, {
@@ -292,7 +327,7 @@ const app = createApp({
             });
             window.scrollTo({ top: 0, behavior: 'smooth' });
         };
-        const deleteCoex = async (id) => { try { await ElMessageBox.confirm('确认删除并退还库存？', '警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/coextrusion/logs/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadCoexLogs(); if (coexForm.id === id) resetCoexForm(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
+        const deleteCoex = async (id) => { try { await ElMessageBox.confirm('确认删除并退还库存？', '警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/coextrusion/logs/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadCoexPage(); if (coexForm.id === id) resetCoexForm(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
 
         const exportCoexExcel = async () => { try { const res = await axios.get('/api/v1/workshops/integration/coextrusion/export', { responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '共挤车间历史台账汇总.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
         const handleCoexImport = async (e) => {
@@ -307,7 +342,7 @@ const app = createApp({
                 coexImportYear.value = m ? parseInt(m[0]) : null;
                 ElMessage.success(res.data.message || '导入完成');
                 if (coexImportYear.value) ElMessage.info('从文件名提取年份: ' + coexImportYear.value);
-                loadCoexLogs();
+                loadCoexPage();
             } catch (err) { ElMessage.error(errMsg(err)); } finally { loading.value = false; e.target.value = ''; }
         };
 
@@ -315,28 +350,54 @@ const app = createApp({
         // 📦 虚拟库存总览
         // ==========================================
         const invSearchKeyword = ref(''); const inventoryList = ref([]); const invLoading = ref(false); const invDialogVisible = ref(false); const invSaveLoading = ref(false); const invForm = reactive({ id: null, partNumber: '', tapeCode: '', modelSpec: '', stockMeters: 0, snapshotDate: getToday(), stockType: '库存' });
-        const invPage = ref(1);
-        const paginatedInventoryList = computed(() => {
-            const start = (invPage.value - 1) * 10;
-            return inventoryList.value.slice(start, start + 10);
-        });
-        const invTotal = computed(() => inventoryList.value.length);
-        watch(inventoryList, () => { invPage.value = 1; });
+        // 🌟 全量加载 + 前端分组/前端分页（CodeReview修复：服务端行级分页会把同零件号的卷记录按页边界切开，导致分组总量低估/重复分组）
+        const invPage = ref(1); const invPageSize = ref(10);
+        const invFilters = reactive({ stockTypes: null });
+        const invStockTypeFilterOptions = [{ text: '库存', value: '库存' }, { text: '订单', value: '订单' }, { text: '滞留', value: '滞留' }];
 
         const loadInventory = async () => {
             invLoading.value = true;
             try {
-                const res = await axios.get('/api/v1/workshops/integration/inventory/list', { params: { keyword: invSearchKeyword.value }, skipErrorHandler: true });
-                const groupMap = {};
-                res.data.forEach(item => {
-                    const pn = item.partNumber;
-                    if (!groupMap[pn]) { groupMap[pn] = { partNumber: pn, modelSpec: item.modelSpec, snapshotDate: item.snapshotDate, totalStockMeters: 0, batches: [] }; }
-                    groupMap[pn].totalStockMeters += Number(item.stockMeters || 0); groupMap[pn].batches.push(item);
-                    if (item.snapshotDate && (!groupMap[pn].snapshotDate || item.snapshotDate > groupMap[pn].snapshotDate)) groupMap[pn].snapshotDate = item.snapshotDate;
-                });
-                inventoryList.value = Object.values(groupMap);
+                // 全量接口（不带 page/size 即旧全量行为，返回最新快照数组）
+                const res = await axios.get('/api/v1/workshops/integration/inventory/list', { skipErrorHandler: true });
+                inventoryList.value = Array.isArray(res.data) ? res.data : [];
             } catch (error) { ElMessage.error(errMsg(error)); } finally { invLoading.value = false; }
         };
+        // 前端过滤（keyword 模糊匹配 partNumber/tapeCode/modelSpec，大小写不敏感；stockTypes 表头筛选精确匹配）后按 partNumber 分组
+        const groupedInventory = computed(() => {
+            const kw = (invSearchKeyword.value || '').trim().toLowerCase();
+            const st = invFilters.stockTypes;
+            const rows = inventoryList.value.filter(item => {
+                if (kw && ![(item.partNumber || ''), (item.tapeCode || ''), (item.modelSpec || '')].some(v => String(v).toLowerCase().includes(kw))) return false;
+                if (st && item.stockType !== st) return false;
+                return true;
+            });
+            const groupMap = {};
+            rows.forEach(item => {
+                const pn = item.partNumber;
+                if (!groupMap[pn]) { groupMap[pn] = { partNumber: pn, modelSpec: item.modelSpec, snapshotDate: item.snapshotDate, totalStockMeters: 0, batches: [], stockTypes: [] }; }
+                groupMap[pn].totalStockMeters += Number(item.stockMeters || 0); groupMap[pn].batches.push(item);
+                if (item.stockType && !groupMap[pn].stockTypes.includes(item.stockType)) groupMap[pn].stockTypes.push(item.stockType);
+                if (item.snapshotDate && (!groupMap[pn].snapshotDate || item.snapshotDate > groupMap[pn].snapshotDate)) groupMap[pn].snapshotDate = item.snapshotDate;
+            });
+            return Object.values(groupMap);
+        });
+        // total = 分组后条数；前端分页切片
+        const invTotal = computed(() => groupedInventory.value.length);
+        const paginatedInventoryList = computed(() => {
+            const list = groupedInventory.value;
+            const maxPage = Math.max(1, Math.ceil(list.length / invPageSize.value));
+            const p = Math.min(invPage.value, maxPage);
+            const start = (p - 1) * invPageSize.value;
+            return list.slice(start, start + invPageSize.value);
+        });
+        const searchInventory = () => { invPage.value = 1; };
+        const handleInvFilterChange = ({ property, filters }) => {
+            if (property === 'stockTypes') invFilters.stockTypes = (filters && filters.length > 0) ? filters[0] : null;
+            invPage.value = 1;
+        };
+        const onInvSizeChange = () => { invPage.value = 1; };
+        const onInvPageChange = () => { /* paginatedInventoryList 为 computed，自动重算 */ };
         const openAddInv = () => { Object.assign(invForm, { id: null, partNumber: '', tapeCode: '', modelSpec: '', stockMeters: 0, snapshotDate: getToday(), stockType: '库存' }); invDialogVisible.value = true; };
         const openEditInv = (row) => { Object.assign(invForm, { id: row.id, partNumber: row.partNumber, tapeCode: row.tapeCode || '', modelSpec: row.modelSpec || '', stockMeters: Number(row.stockMeters || 0), snapshotDate: row.snapshotDate || getToday(), stockType: row.stockType || '库存' }); invDialogVisible.value = true; };
         const saveInv = async () => { if (!invForm.partNumber) { ElMessage.warning('带坯零件号不能为空！'); return; } invSaveLoading.value = true; try { const res = await axios.post('/api/v1/workshops/integration/inventory/save', invForm, { skipErrorHandler: true }); ElMessage.success(res.data); invDialogVisible.value = false; loadInventory(); } catch (error) { ElMessage.error(errMsg(error)); } finally { invSaveLoading.value = false; } };
@@ -461,29 +522,183 @@ const app = createApp({
             warpWeightPerMeter: null, weftWeightPerMeter3000D: null, weftWeightPerMeter2000D: null, glueUsagePerMeter: null
         });
         const processForm = reactive(emptyProcessForm());
-        const processSearch = reactive({ finishedPartNumber: '', tapePartNumber: '' });
-        const processPage = ref(1);
-        const filteredProcessList = computed(() => {
-            return processList.value.filter(item => {
-                return (!(processSearch.finishedPartNumber) || (item.finishedPartNumber || '').includes(processSearch.finishedPartNumber)) &&
-                    (!(processSearch.tapePartNumber) || (item.tapePartNumber || '').includes(processSearch.tapePartNumber));
-            });
-        });
-        const paginatedProcessList = computed(() => {
-            const start = (processPage.value - 1) * 10;
-            return filteredProcessList.value.slice(start, start + 10);
-        });
-        const processTotal = computed(() => filteredProcessList.value.length);
-        watch(processSearch, () => { processPage.value = 1; }, { deep: true });
+        // 🌟 服务端分页 + 表头筛选状态（契约：keyword 模糊匹配 finishedPartNumber/tapePartNumber/finishedModelSpec，筛选列 materialType）
+        const processKeyword = ref('');
+        const processFilters = reactive({ materialType: null });
+        const processPage = ref(1); const processPageSize = ref(10); const processTotal = ref(0);
+        const paginatedProcessList = ref([]);
+        // 表头筛选选项：材质类型取自工艺库已加载数据
+        const processMaterialFilterOptions = computed(() => distinctFilterOptions(processList.value.map(p => p.materialType)));
 
         const loadProcesses = async (silent) => { try { const res = await axios.get('/api/v1/workshops/integration/process/list', { skipErrorHandler: true }); processList.value = res.data; } catch (e) { if (!silent) ElMessage.error(errMsg(e)); } };
+        // 🌟 工艺库列表页：服务端分页查询
+        const loadProcessPage = async () => {
+            try {
+                const params = { page: processPage.value - 1, size: processPageSize.value };
+                if (processKeyword.value && processKeyword.value.trim()) params.keyword = processKeyword.value.trim();
+                if (processFilters.materialType) params.materialType = processFilters.materialType;
+                const res = await axios.get('/api/v1/workshops/integration/process/list', { params, skipErrorHandler: true });
+                const data = res.data || {};
+                paginatedProcessList.value = Array.isArray(data.content) ? data.content : [];
+                processTotal.value = data.totalElements || 0;
+            } catch (e) { ElMessage.error(errMsg(e)); }
+        };
+        const searchProcess = () => { processPage.value = 1; loadProcessPage(); };
+        const handleProcessFilterChange = ({ property, filters }) => {
+            if (property === 'materialType') processFilters.materialType = (filters && filters.length > 0) ? filters[0] : null;
+            processPage.value = 1; loadProcessPage();
+        };
+        const onProcessSizeChange = () => { processPage.value = 1; loadProcessPage(); };
+        const onProcessPageChange = () => { loadProcessPage(); };
         const openAddProcess = () => { Object.assign(processForm, emptyProcessForm()); processDialogVisible.value = true; };
         const openEditProcess = (row) => { Object.assign(processForm, emptyProcessForm(), row); processDialogVisible.value = true; };
-        const saveProcess = async () => { if (!processForm.finishedPartNumber || !processForm.tapePartNumber) { ElMessage.error('零件号不能为空！'); return; } try { const payload = { ...processForm, weftSpec: processForm.weftSpec3000D || processForm.weftSpec }; const res = await axios.post('/api/v1/workshops/integration/process/save', payload, { skipErrorHandler: true }); ElMessage.success(res.data); processDialogVisible.value = false; loadProcesses(); } catch (e) { ElMessage.error(errMsg(e)); } };
-        const deleteProcess = async (id) => { try { await ElMessageBox.confirm('确认解除？', '警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/process/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadProcesses(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
+        const saveProcess = async () => { if (!processForm.finishedPartNumber || !processForm.tapePartNumber) { ElMessage.error('零件号不能为空！'); return; } try { const payload = { ...processForm, weftSpec: processForm.weftSpec3000D || processForm.weftSpec }; const res = await axios.post('/api/v1/workshops/integration/process/save', payload, { skipErrorHandler: true }); ElMessage.success(res.data); processDialogVisible.value = false; loadProcesses(true); loadProcessPage(); } catch (e) { ElMessage.error(errMsg(e)); } };
+        const deleteProcess = async (id) => { try { await ElMessageBox.confirm('确认解除？', '警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/process/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadProcesses(true); loadProcessPage(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
 
         const exportProcessExcel = async () => { try { const response = await axios.get('/api/v1/workshops/integration/process/export', { responseType: 'blob' }); const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '工艺路线数据大盘.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch (error) { ElMessage.error('导出失败，请检查服务器！'); } };
-        const handleProcessImport = async (event) => { const file = event.target.files[0]; if (!file) return; const formData = new FormData(); formData.append('file', file); loading.value = true; try { const response = await axios.post('/api/v1/workshops/integration/process/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, skipErrorHandler: true }); ElMessage.success(response.data); loadProcesses(); } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; event.target.value = ''; } };
+        const handleProcessImport = async (event) => { const file = event.target.files[0]; if (!file) return; const formData = new FormData(); formData.append('file', file); loading.value = true; try { const response = await axios.post('/api/v1/workshops/integration/process/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, skipErrorHandler: true }); ElMessage.success(response.data); loadProcesses(true); loadProcessPage(); } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; event.target.value = ''; } };
+
+        // ==========================================
+        // 🧶 织造机台档案（复用 machineList 全量数据 + 前端分页）
+        // ==========================================
+        // 🌟 口径拼接/拆分工具：提交时 "min-max" 写入 caliberLimit，任一为空则传空串；编辑回填时拆开
+        const buildCaliberLimit = (min, max) => (min !== null && min !== '' && max !== null && max !== '') ? `${min}-${max}` : '';
+        const splitCaliberLimit = (cal) => { const parts = String(cal || '').split('-'); return [parts[0] || '', parts[1] || '']; };
+
+        const machineArchiveKeyword = ref('');
+        const machineArchivePage = ref(1); const machineArchivePageSize = ref(10);
+        const machineDialogVisible = ref(false); const machineArchiveEditMode = ref(false); const machineFileRef = ref(null);
+        const emptyMachineForm = () => ({ machineId: '', caliberMin: null, caliberMax: null, workshopId: '', warpSpec: '', weftSpec: '', bobbinCount: null, machineStatus: '', adjacentMachine: '', operatorName: '' });
+        const machineForm = reactive(emptyMachineForm());
+
+        // 🌟 档案列表接口为全量返回（无服务端分页），故此处为前端关键字过滤 + computed slice 分页
+        const filteredMachineArchive = computed(() => {
+            const kw = machineArchiveKeyword.value.trim().toLowerCase();
+            if (!kw) return machineList.value;
+            return machineList.value.filter(m => [m.machineId, m.workshopId, m.warpSpec, m.weftSpec, m.machineStatus, m.adjacentMachine, m.operatorName, m.caliberLimit].some(v => v != null && String(v).toLowerCase().includes(kw)));
+        });
+        const machineArchiveTotal = computed(() => filteredMachineArchive.value.length);
+        const paginatedMachineArchiveList = computed(() => {
+            const start = (machineArchivePage.value - 1) * machineArchivePageSize.value;
+            return filteredMachineArchive.value.slice(start, start + machineArchivePageSize.value);
+        });
+        const searchMachineArchive = () => { machineArchivePage.value = 1; };
+
+        const openAddMachineArchive = () => { machineArchiveEditMode.value = false; Object.assign(machineForm, emptyMachineForm()); machineDialogVisible.value = true; };
+        const openEditMachineArchive = (row) => {
+            machineArchiveEditMode.value = true;
+            const parts = splitCaliberLimit(row.caliberLimit);
+            Object.assign(machineForm, emptyMachineForm(), {
+                machineId: row.machineId, workshopId: row.workshopId || '', warpSpec: row.warpSpec || '', weftSpec: row.weftSpec || '',
+                bobbinCount: row.bobbinCount != null ? row.bobbinCount : null, machineStatus: row.machineStatus || '',
+                adjacentMachine: row.adjacentMachine || '', operatorName: row.operatorName || '',
+                caliberMin: parts[0] !== '' ? Number(parts[0]) : null, caliberMax: parts[1] !== '' ? Number(parts[1]) : null
+            });
+            machineDialogVisible.value = true;
+        };
+        const saveMachineArchive = async () => {
+            if (!machineForm.machineId) { ElMessage.error('机台号不能为空！'); return; }
+            const payload = {
+                machineId: machineForm.machineId,
+                caliberLimit: buildCaliberLimit(machineForm.caliberMin, machineForm.caliberMax),
+                workshopId: machineForm.workshopId || undefined, warpSpec: machineForm.warpSpec || undefined,
+                weftSpec: machineForm.weftSpec || undefined, bobbinCount: machineForm.bobbinCount != null ? machineForm.bobbinCount : undefined,
+                machineStatus: machineForm.machineStatus || undefined, adjacentMachine: machineForm.adjacentMachine || undefined,
+                operatorName: machineForm.operatorName || undefined
+            };
+            try {
+                const res = await axios.post('/api/v1/workshops/integration/weaving/machines', payload, { skipErrorHandler: true });
+                ElMessage.success(typeof res.data === 'string' ? res.data : '保存成功');
+                machineDialogVisible.value = false;
+                loadMachinesAndLines(); // 同步刷新全景卡片与甘特图数据源（本页列表复用 machineList 自动更新）
+            } catch (e) { ElMessage.error(errMsg(e)); }
+        };
+        const deleteMachineArchive = async (machineId) => {
+            try {
+                await ElMessageBox.confirm(`确认删除机台档案 [${machineId}] ？若被历史台账引用将被拒绝。`, '警告', { type: 'warning' });
+                const res = await axios.delete(`/api/v1/workshops/integration/weaving/machines/${encodeURIComponent(machineId)}`, { skipErrorHandler: true });
+                ElMessage.success(typeof res.data === 'string' ? res.data : '删除成功');
+                loadMachinesAndLines();
+            } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); }
+        };
+        const handleMachineArchiveImport = async (event) => {
+            const file = event.target.files[0]; if (!file) return;
+            const formData = new FormData(); formData.append('file', file);
+            loading.value = true; importResult.value = null;
+            try {
+                const response = await axios.post('/api/v1/workshops/integration/weaving/machines/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, skipErrorHandler: true });
+                importResult.value = response.data; lastImportSource.value = 'machine-archive';
+                ElMessage.success(response.data.message || '导入完成');
+                loadMachinesAndLines();
+            } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; event.target.value = ''; }
+        };
+        const exportMachineArchiveExcel = async () => { try { const response = await axios.get('/api/v1/workshops/integration/weaving/machines/export', { responseType: 'blob' }); const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '织造机台档案.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch (error) { ElMessage.error('导出失败，请检查服务器！'); } };
+
+        // ==========================================
+        // 🗜️ 共挤产线档案（复用 lineList 全量数据 + 前端分页）
+        // ==========================================
+        const lineArchiveKeyword = ref('');
+        const lineArchivePage = ref(1); const lineArchivePageSize = ref(10);
+        const lineDialogVisible = ref(false); const lineArchiveEditMode = ref(false); const lineFileRef = ref(null);
+        const emptyLineForm = () => ({ lineId: '', caliberMin: null, caliberMax: null, workshopId: '', lineStatus: '' });
+        const lineForm = reactive(emptyLineForm());
+
+        const filteredLineArchive = computed(() => {
+            const kw = lineArchiveKeyword.value.trim().toLowerCase();
+            if (!kw) return lineList.value;
+            return lineList.value.filter(l => [l.lineId, l.workshopId, l.lineStatus, l.caliberLimit].some(v => v != null && String(v).toLowerCase().includes(kw)));
+        });
+        const lineArchiveTotal = computed(() => filteredLineArchive.value.length);
+        const paginatedLineArchiveList = computed(() => {
+            const start = (lineArchivePage.value - 1) * lineArchivePageSize.value;
+            return filteredLineArchive.value.slice(start, start + lineArchivePageSize.value);
+        });
+        const searchLineArchive = () => { lineArchivePage.value = 1; };
+
+        const openAddLineArchive = () => { lineArchiveEditMode.value = false; Object.assign(lineForm, emptyLineForm()); lineDialogVisible.value = true; };
+        const openEditLineArchive = (row) => {
+            lineArchiveEditMode.value = true;
+            const parts = splitCaliberLimit(row.caliberLimit);
+            Object.assign(lineForm, emptyLineForm(), {
+                lineId: row.lineId, workshopId: row.workshopId || '', lineStatus: row.lineStatus || '',
+                caliberMin: parts[0] !== '' ? Number(parts[0]) : null, caliberMax: parts[1] !== '' ? Number(parts[1]) : null
+            });
+            lineDialogVisible.value = true;
+        };
+        const saveLineArchive = async () => {
+            if (!lineForm.lineId) { ElMessage.error('产线号不能为空！'); return; }
+            const payload = {
+                lineId: lineForm.lineId,
+                caliberLimit: buildCaliberLimit(lineForm.caliberMin, lineForm.caliberMax),
+                workshopId: lineForm.workshopId || undefined, lineStatus: lineForm.lineStatus || undefined
+            };
+            try {
+                const res = await axios.post('/api/v1/workshops/integration/coextrusion/lines', payload, { skipErrorHandler: true });
+                ElMessage.success(typeof res.data === 'string' ? res.data : '保存成功');
+                lineDialogVisible.value = false;
+                loadMachinesAndLines();
+            } catch (e) { ElMessage.error(errMsg(e)); }
+        };
+        const deleteLineArchive = async (lineId) => {
+            try {
+                await ElMessageBox.confirm(`确认删除产线档案 [${lineId}] ？若被历史台账引用将被拒绝。`, '警告', { type: 'warning' });
+                const res = await axios.delete(`/api/v1/workshops/integration/coextrusion/lines/${encodeURIComponent(lineId)}`, { skipErrorHandler: true });
+                ElMessage.success(typeof res.data === 'string' ? res.data : '删除成功');
+                loadMachinesAndLines();
+            } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); }
+        };
+        const handleLineArchiveImport = async (event) => {
+            const file = event.target.files[0]; if (!file) return;
+            const formData = new FormData(); formData.append('file', file);
+            loading.value = true; importResult.value = null;
+            try {
+                const response = await axios.post('/api/v1/workshops/integration/coextrusion/lines/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, skipErrorHandler: true });
+                importResult.value = response.data; lastImportSource.value = 'line-archive';
+                ElMessage.success(response.data.message || '导入完成');
+                loadMachinesAndLines();
+            } catch (error) { ElMessage.error(errMsg(error)); } finally { loading.value = false; event.target.value = ''; }
+        };
+        const exportLineArchiveExcel = async () => { try { const response = await axios.get('/api/v1/workshops/integration/coextrusion/lines/export', { responseType: 'blob' }); const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '共挤产线档案.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch (error) { ElMessage.error('导出失败，请检查服务器！'); } };
 
         //==========================================
         // 🛒 销售订单核心
@@ -493,12 +708,12 @@ const app = createApp({
         const orderItems = ref([{ finishedPartNumber: '', productName: '', modelSpec: '', color: '', material: '', unfinishedMeters: 0, metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }]);
         const orderPage = ref(1); const orderFileRef = ref(null);
 
-        const paginatedOrderList = computed(() => {
-            const start = (orderPage.value - 1) * 10;
-            return orderList.value.slice(start, start + 10);
-        });
-        const orderTotal = computed(() => orderList.value.length);
-        watch(orderList, () => { orderPage.value = 1; });
+        // 🌟 全量加载（loadOrders）+ 前端过滤/分组/前端分页（CodeReview修复：服务端行级分页会把同订单明细按页边界切开，导致分组错乱/total语义错位）
+        const orderKeyword = ref('');
+        const orderFilters = reactive({ partNumbers: null });
+        const orderPageSize = ref(10);
+        // 表头筛选选项：成品零件号取自已加载订单明细
+        const orderPartFilterOptions = computed(() => distinctFilterOptions(orderList.value.flatMap(o => (o.items || []).map(i => i.finishedPartNumber))));
 
         const resetOrderForm = () => { isOrderEditMode.value = false; Object.assign(orderHeader, { orderId: '', customerName: '', salesperson: '', orderDate: getToday(), deliveryDate: '' }); orderItems.value = [{ finishedPartNumber: '', productName: '', modelSpec: '', color: '', material: '', unfinishedMeters: 0, metersPerRoll: 0, rollCount: 0, totalLength: 0, remarks: '' }]; };
         const calcTotal = (row) => { row.totalLength = (row.metersPerRoll * row.rollCount).toFixed(2); };
@@ -532,6 +747,34 @@ const app = createApp({
             }
         };
 
+        // 🌟 订单列表页：前端过滤（keyword 模糊匹配订单号/零件号/品名/客户；partNumbers 表头筛选匹配明细含该零件号的订单）→ 按 orderId 分组（loadOrders 已分组）→ 前端分页；total = 分组后订单数
+        const groupedOrders = computed(() => {
+            const kw = (orderKeyword.value || '').trim().toLowerCase();
+            const fpn = orderFilters.partNumbers;
+            let list = orderList.value;
+            if (fpn) list = list.filter(o => (o.items || []).some(i => i.finishedPartNumber === fpn));
+            if (kw) list = list.filter(o =>
+                (o.orderId || '').toLowerCase().includes(kw) ||
+                (o.customerName || '').toLowerCase().includes(kw) ||
+                (o.items || []).some(i => (i.finishedPartNumber || '').toLowerCase().includes(kw) || (i.productName || '').toLowerCase().includes(kw)));
+            return list;
+        });
+        const orderTotal = computed(() => groupedOrders.value.length);
+        const paginatedOrderList = computed(() => {
+            const list = groupedOrders.value;
+            const maxPage = Math.max(1, Math.ceil(list.length / orderPageSize.value));
+            const p = Math.min(orderPage.value, maxPage);
+            const start = (p - 1) * orderPageSize.value;
+            return list.slice(start, start + orderPageSize.value);
+        });
+        const searchOrders = () => { orderPage.value = 1; };
+        const handleOrderFilterChange = ({ property, filters }) => {
+            if (property === 'partNumbers') orderFilters.partNumbers = (filters && filters.length > 0) ? filters[0] : null;
+            orderPage.value = 1;
+        };
+        const onOrderSizeChange = () => { orderPage.value = 1; };
+        const onOrderPageChange = () => { /* paginatedOrderList 为 computed，自动重算 */ };
+
         const submitOrder = async () => {
             if (!orderHeader.orderId) { ElMessage.error('请填写订单号！'); return; }
             loading.value = true; const payload = orderItems.value.map(item => ({ ...orderHeader, ...item }));
@@ -560,6 +803,7 @@ const app = createApp({
             plannedProductionDays: 30,
             globalBufferDays: 3,
             weavingAdvanceDays: 2,
+            weavingReserveDays: 0,
             items: [{ finishedPartNumber: '', productName: '', modelSpec: '', metersPerRoll: 0, rollCount: 0 }]
         });
         const inquiryResult = ref(null);
@@ -584,6 +828,7 @@ const app = createApp({
                     plannedProductionDays: inquiryForm.plannedProductionDays,
                     globalBufferDays: inquiryForm.globalBufferDays,
                     weavingAdvanceDays: inquiryForm.weavingAdvanceDays,
+                    weavingReserveDays: inquiryForm.weavingReserveDays || 0,
                     items: inquiryForm.items
                         .filter(i => i.finishedPartNumber)
                         .map(i => ({
@@ -598,12 +843,14 @@ const app = createApp({
                 };
                 const res = await axios.post('/api/v1/workshops/estimation/inquiry', payload, { skipErrorHandler: true });
                 inquiryResult.value = res.data;
+                syncInquiryResCounts();
                 estResult.value = {
                     orderId: '询单预估',
                     details: res.data.details || [],
                     overallStartDate: res.data.overallStartDate,
                     overallEndDate: res.data.overallEndDate,
-                    totalDays: res.data.totalDays
+                    totalDays: res.data.totalDays,
+                    conflictWarnings: res.data.conflictWarnings || []
                 };
                 ElMessage.success('🔮 询单预估计算完毕！');
             } catch (error) {
@@ -624,6 +871,65 @@ const app = createApp({
             } finally {
                 loading.value = false;
             }
+        };
+
+        // ==========================================
+        // 🎛️ 任务#24：询单独立增减织造机台/共挤产线（details 已为资源行模型）
+        // ==========================================
+        // 每个询单条目一组的数量步进器状态：{ finishedPartNumber, machineCount, lineCount }
+        const inquiryResCounts = ref([]);
+        let inquiryRecalcTimer = null;
+
+        // 预估完成后初始化/补齐各条目步进器值：已改过的保留用户值，新条目取响应推荐值
+        const syncInquiryResCounts = () => {
+            if (!inquiryResult.value) return;
+            const parts = inquiryForm.items.filter(i => i.finishedPartNumber).map(i => i.finishedPartNumber);
+            inquiryResCounts.value = parts.map(pn => {
+                const exist = inquiryResCounts.value.find(c => c.finishedPartNumber === pn);
+                return exist || {
+                    finishedPartNumber: pn,
+                    machineCount: inquiryResult.value.recommendedMachineCount || 1,
+                    lineCount: inquiryResult.value.recommendedLineCount || 1
+                };
+            });
+        };
+
+        // 组装 resourceOverrides：数量 + 既有人工产能（熔断补录保留） + 当前 details 资源行已选指派
+        const rebuildInquiryOverrides = () => {
+            const details = (inquiryResult.value && inquiryResult.value.details) || [];
+            inquiryOverrides.value = inquiryResCounts.value
+                .filter(c => c.finishedPartNumber)
+                .map(c => {
+                    const existing = inquiryOverrides.value.find(o => o.finishedPartNumber === c.finishedPartNumber) || {};
+                    const assignedMachineIds = details
+                        .filter(d => d.finishedPartNumber === c.finishedPartNumber && d.plannedMachine && (d.allocationType ? d.allocationType === 'weaving' : !!d.weavingStart))
+                        .map(d => d.plannedMachine);
+                    const assignedLineIds = details
+                        .filter(d => d.finishedPartNumber === c.finishedPartNumber && d.plannedLine && (d.allocationType ? d.allocationType === 'coex' : !!d.coexStart))
+                        .map(d => d.plannedLine);
+                    return {
+                        finishedPartNumber: c.finishedPartNumber,
+                        machineCount: c.machineCount || undefined,
+                        lineCount: c.lineCount || undefined,
+                        manualWeavingCapacity: existing.manualWeavingCapacity,
+                        manualCoexCapacity: existing.manualCoexCapacity,
+                        assignedMachineIds: assignedMachineIds.length > 0 ? assignedMachineIds : undefined,
+                        assignedLineIds: assignedLineIds.length > 0 ? assignedLineIds : undefined
+                    };
+                });
+        };
+
+        // 🌟 500ms 防抖（同 debouncedApplyAdjustments 模式）：步进器/下拉变更 → 重建 overrides → fetchInquiry 重算
+        const debouncedInquiryRecalc = () => {
+            clearTimeout(inquiryRecalcTimer);
+            inquiryRecalcTimer = setTimeout(() => { rebuildInquiryOverrides(); fetchInquiry(); }, 500);
+        };
+
+        // 机台/产线下拉变更后回写指派 id 并防抖重算
+        const onInquiryAssignChange = (row) => {
+            row.assignedMachineIds = row.plannedMachine ? [row.plannedMachine] : undefined;
+            row.assignedLineIds = row.plannedLine ? [row.plannedLine] : undefined;
+            debouncedInquiryRecalc();
         };
 
         // 🌟 性能优化：提取共享 inquiryGanttBounds
@@ -656,6 +962,21 @@ const app = createApp({
             return markers;
         });
 
+        // 需求6：构建共挤甘特条上的换带坯竖线标记（百分比 = (eventTime - rowStart) / (rowEnd - rowStart)，超出该条范围的事件过滤不渲染）
+        const buildTapeChangeMarkers = (d, s, e) => {
+            if (!Array.isArray(d.tapeChangeEvents) || d.tapeChangeEvents.length === 0 || !(e > s)) return [];
+            const markers = [];
+            d.tapeChangeEvents.forEach(ev => {
+                const t = ev && ev.time ? new Date(ev.time).getTime() : NaN;
+                if (isNaN(t) || t <= s || t >= e) return;
+                markers.push({
+                    left: (((t - s) / (e - s)) * 100).toFixed(2) + '%',
+                    tip: `更换带坯：${ev.fromMachineId} → ${ev.toMachineId} @ ${(ev.time || '').replace('T', ' ')}`
+                });
+            });
+            return markers;
+        };
+
         const inquiryGanttRows = computed(() => {
             if (!inquiryGanttBounds.value || !inquiryResult.value || !inquiryResult.value.details) return [];
             const { minTime, span: totalSpan } = inquiryGanttBounds.value;
@@ -670,7 +991,7 @@ const app = createApp({
                 if (d.weavingStart) {
                     const s = new Date(d.weavingStart).getTime(); const e = new Date(d.weavingEnd).getTime();
                     const task = {
-                        ...d, rawStart: d.weavingStart.replace('T',' '), rawEnd: d.weavingEnd.replace('T',' '),
+                        ...d, uid: 'inq_' + idx + '_w', rawStart: d.weavingStart.replace('T',' '), rawEnd: d.weavingEnd.replace('T',' '),
                         left: ((s - minTime) / totalSpan * 100) + '%', width: ((e - s) / totalSpan * 100) + '%',
                         color, label: `成品:${d.finishedPartNumber} (${(d.tapeMetersNeed || 0).toFixed(0)}m)`, typeStr: '织造排期'
                     };
@@ -680,9 +1001,10 @@ const app = createApp({
                 if (d.coexStart) {
                     const s = new Date(d.coexStart).getTime(); const e = new Date(d.coexEnd).getTime();
                     const task = {
-                        ...d, rawStart: d.coexStart.replace('T',' '), rawEnd: d.coexEnd.replace('T',' '),
+                        ...d, uid: 'inq_' + idx + '_c', rawStart: d.coexStart.replace('T',' '), rawEnd: d.coexEnd.replace('T',' '),
                         left: ((s - minTime) / totalSpan * 100) + '%', width: ((e - s) / totalSpan * 100) + '%',
-                        color, label: `成品:${d.finishedPartNumber} (${(d.finishedMeters || 0).toFixed(0)}m)`, typeStr: '共挤排期'
+                        color, label: `成品:${d.finishedPartNumber} (${(d.finishedMeters || 0).toFixed(0)}m)`, typeStr: '共挤排期',
+                        events: buildTapeChangeMarkers(d, s, e)
                     };
                     const rId = d.plannedLine ? 'C_' + d.plannedLine : 'C_UNASSIGNED';
                     if (rowsMap.has(rId)) rowsMap.get(rId).tasks.push(task);
@@ -698,7 +1020,8 @@ const app = createApp({
             orderId: '',
             itemAdjustments: [],
             globalBufferDays: 3,
-            weavingAdvanceDays: 2
+            weavingAdvanceDays: 2,
+            weavingReserveDays: 0
         });
         const estResult = ref(null);
 
@@ -742,7 +1065,8 @@ const app = createApp({
                 const res = await axios.post('/api/v1/workshops/estimation/preview-multi', {
                     orderIds: selectedOrderIds.value,
                     globalBufferDays: estForm.globalBufferDays,
-                    weavingAdvanceDays: estForm.weavingAdvanceDays
+                    weavingAdvanceDays: estForm.weavingAdvanceDays,
+                    weavingReserveDays: estForm.weavingReserveDays || 0
                 }, { skipErrorHandler: true });
                 const data = res.data;
                 multiOrderResult.value = data;
@@ -937,7 +1261,8 @@ const app = createApp({
                         ...d, rawStart: d.coexStart.replace('T',' '), rawEnd: d.coexEnd.replace('T',' '),
                         left: ((s - minTime) / totalSpan * 100) + '%', width: ((e - s) / totalSpan * 100) + '%',
                         color: color, label: `订单:${d.orderId} | 成品:${d.finishedPartNumber} (${(d.finishedMeters || 0).toFixed(0)}m)`,
-                        typeStr: '共挤排期'
+                        typeStr: '共挤排期',
+                        events: buildTapeChangeMarkers(d, s, e)
                     };
                     const rId = d.plannedLine ? 'C_' + d.plannedLine : 'C_UNASSIGNED';
                     if(rowsMap.has(rId)) rowsMap.get(rId).tasks.push(task);
@@ -1357,19 +1682,24 @@ const app = createApp({
             loading.value = true;
             try {
                 const adjustments = estResult.value.details
-                    .filter(d => d.manualWeavingCap || d.manualCoexCap || d.manualWeavingMachineCount || d.manualCoexLineCount)
+                    // 🌟 任务#24修复：下拉换机台/产线（plannedMachine/plannedLine）也需触发重算，故纳入过滤条件
+                    .filter(d => d.manualWeavingCap || d.manualCoexCap || d.manualWeavingMachineCount || d.manualCoexLineCount || d.plannedMachine || d.plannedLine)
                     .map(d => ({
                         finishedPartNumber: d.finishedPartNumber,
                         manualWeavingCapacity: d.manualWeavingCap || undefined,
                         manualCoexCapacity: d.manualCoexCap || undefined,
                         manualWeavingMachineCount: d.manualWeavingMachineCount || undefined,
-                        manualCoexLineCount: d.manualCoexLineCount || undefined
+                        manualCoexLineCount: d.manualCoexLineCount || undefined,
+                        // 🌟 任务#24修复：补交指派 id，使下拉换机台/产线后重算真正生效
+                        assignedMachineIds: d.plannedMachine ? [d.plannedMachine] : undefined,
+                        assignedLineIds: d.plannedLine ? [d.plannedLine] : undefined
                     }));
                 
                 const reqBody = {
                     orderId: estResult.value.orderId,
                     globalBufferDays: estForm.globalBufferDays,
                     weavingAdvanceDays: estForm.weavingAdvanceDays,
+                    weavingReserveDays: estForm.weavingReserveDays || 0,
                     itemAdjustments: adjustments.length > 0 ? adjustments : undefined
                 };
                 
@@ -1559,7 +1889,8 @@ const app = createApp({
                         ...d, rawStart: d.coexStart.replace('T',' '), rawEnd: d.coexEnd.replace('T',' '),
                         left: ((s - minTime) / totalSpan * 100) + '%', width: ((e - s) / totalSpan * 100) + '%',
                         color: color, label: `成品:${d.finishedPartNumber} (${(d.finishedMeters || 0).toFixed(0)}m)`,
-                        typeStr: '共挤排期'
+                        typeStr: '共挤排期',
+                        events: buildTapeChangeMarkers(d, s, e)
                     });
                 }
             });
@@ -1611,10 +1942,11 @@ const app = createApp({
             loadedPages.value.add(newVal);
             if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); }
             if (newVal === 'inventory') loadInventory(); 
-            if (newVal === 'weaving') { loadWeavingLogs(); loadProcesses(true); }
-            if (newVal === 'coex') { loadCoexLogs(); loadProcesses(true); } 
-            if (newVal === 'order') loadOrders(); 
-            if (newVal === 'process') loadProcesses();
+            if (newVal === 'weaving') { loadWeavingPage(); loadProcesses(true); }
+            if (newVal === 'coex') { loadCoexPage(); loadProcesses(true); } 
+            if (newVal === 'order') loadOrders();
+            if (newVal === 'process') { loadProcesses(); loadProcessPage(); }
+            if (newVal === 'machine-archive' || newVal === 'line-archive') { loadMachinesAndLines(); }
             if (newVal === 'execution') { loadWeavingLogs(); loadCoexLogs(); loadOrders(); loadAllSchedulePlans(); }
             if (newVal === 'order-dashboard') { loadOrders(); loadScheduleSummary(); }
             if (newVal === 'inquiry') { /* 询单页面按需加载 */ }
@@ -1624,16 +1956,20 @@ const app = createApp({
 
         return {
             isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect, refreshCurrentPage, machineList, lineList,
-            weavingForm, weavingLogList, submitWeaving, openEditWeaving, deleteWeaving, resetWeavingForm, weavingFileRef, exportWeavingExcel, handleWeavingImport, weavingSearch, weavingPage, paginatedWeavingLogs, weavingTotal, recheckGradeB,
-            coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm, coexFileRef, exportCoexExcel, handleCoexImport, coexSearch, coexPage, paginatedCoexLogs, coexTotal, coexImportYear,
-            invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv, invPage, paginatedInventoryList, invTotal,
+            weavingForm, weavingLogList, submitWeaving, openEditWeaving, deleteWeaving, resetWeavingForm, weavingFileRef, exportWeavingExcel, handleWeavingImport, weavingKeyword, weavingMachineFilterOptions, weavingShiftFilterOptions, weavingPage, weavingPageSize, paginatedWeavingLogs, weavingTotal, loadWeavingPage, searchWeaving, handleWeavingFilterChange, onWeavingSizeChange, onWeavingPageChange, recheckGradeB,
+            coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm, coexFileRef, exportCoexExcel, handleCoexImport, coexKeyword, coexMachineFilterOptions, coexModelFilterOptions, coexColorFilterOptions, coexPage, coexPageSize, paginatedCoexLogs, coexTotal, loadCoexPage, searchCoex, handleCoexFilterChange, onCoexSizeChange, onCoexPageChange, coexImportYear,
+            invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv, invPage, invPageSize, paginatedInventoryList, invTotal, invStockTypeFilterOptions, searchInventory, handleInvFilterChange, onInvSizeChange, onInvPageChange,
             splitDialogVisible, splitSaving, splitSource, splitLengths, splitTotal, openSplitInv, addSplitRow, removeSplitRow, submitSplit,
             dailySummaryVisible, dailySummaryLoading, dailySummaryRange, dailySummaryData, loadDailySummary, openDailySummary,
             importResult, lastImportSource, importLoading, inventorySnapshotDate, inventoryFile, handleInventoryFileChange, importInventory, exportInventory, reconciliationData, reconciliationLoading, loadReconciliationReport, confirmReconciliation,
-            orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, orderPage, paginatedOrderList, orderTotal,
+            orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, orderKeyword, orderPage, orderPageSize, paginatedOrderList, orderTotal, orderPartFilterOptions, searchOrders, handleOrderFilterChange, onOrderSizeChange, onOrderPageChange,
             estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity, capacityFieldLabel, weavingScheduleDetails, coexScheduleDetails,
             inquiryForm, inquiryResult, addInquiryItem, removeInquiryItem, fetchInquiry, inquiryGanttTimeline, inquiryGanttRows,
-            processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processSearch, processPage, paginatedProcessList, processTotal,
+            inquiryResCounts, debouncedInquiryRecalc, onInquiryAssignChange,
+            processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processKeyword, processPage, processPageSize, paginatedProcessList, processTotal, processMaterialFilterOptions, loadProcessPage, searchProcess, handleProcessFilterChange, onProcessSizeChange, onProcessPageChange,
+            splitCaliberLimit,
+            machineArchiveKeyword, machineArchivePage, machineArchivePageSize, machineArchiveTotal, paginatedMachineArchiveList, machineDialogVisible, machineArchiveEditMode, machineForm, machineFileRef, searchMachineArchive, openAddMachineArchive, openEditMachineArchive, saveMachineArchive, deleteMachineArchive, handleMachineArchiveImport, exportMachineArchiveExcel,
+            lineArchiveKeyword, lineArchivePage, lineArchivePageSize, lineArchiveTotal, paginatedLineArchiveList, lineDialogVisible, lineArchiveEditMode, lineForm, lineFileRef, searchLineArchive, openAddLineArchive, openEditLineArchive, saveLineArchive, deleteLineArchive, handleLineArchiveImport, exportLineArchiveExcel,
             allWeavingMachines, factoryLines,
             executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos, dashboardViewDays,
             orderFileRef, exportOrderExcel, handleOrderImport, orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX,
