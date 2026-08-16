@@ -4,7 +4,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 口径解析与匹配静态工具类
+ * 口径解析与匹配工具类（v2：Integer min/max 模型）
+ * <p>核心语义变更：规格字符串（如 "16-20"）仅 "-" 后的整数为口径值（20），
+ * 与机台/产线的 caliberMin/caliberMax 做 {@code >= min && <= max} 判定。</p>
  */
 public final class CaliberUtils {
 
@@ -12,84 +14,99 @@ public final class CaliberUtils {
 
     private CaliberUtils() {}
 
-    /**
-     * 从规格字符串中提取口径数值（取 "-" 分隔后的最后一个数值段）。
-     * <p>委托 {@link #extractCaliberRange(String)} 取其上限值，保持既有调用方行为不变：
-     * "16-20" → 20；"16" → 16；解析失败返回 null。</p>
-     */
-    public static Double extractCaliber(String spec) {
-        double[] range = extractCaliberRange(spec);
-        return range == null ? null : range[1];
-    }
+    // ==================== 口径值提取 ====================
 
     /**
-     * 从规格字符串中提取口径区间 [min, max]。
-     * <p>先做归一化（全角"－"转半角"-"、剔除空白及非数字/非小数点/非连字符的脏字符），
-     * 再按 "-" 拆分取首、末数值段："16-20" → [16,20]；单值 "16" → [16,16]；
-     * 解析失败返回 null。</p>
+     * 从规格字符串中提取口径值：取 "-" 后的最后一个整数段。
+     * <ul>
+     *   <li>"16-20" → 20</li>
+     *   <li>"20" → 20</li>
+     *   <li>"16-20.5" → 20（向下取整）</li>
+     *   <li>null / 空 / 解析失败 → null</li>
+     * </ul>
      */
-    public static double[] extractCaliberRange(String spec) {
+    public static Integer extractCaliberValue(String spec) {
         if (spec == null || spec.trim().isEmpty()) return null;
-        // 归一化：全角连字符转半角，剔除空白与非数字/非小数点/非连字符脏字符
         String normalized = spec.replace('－', '-')
                 .replaceAll("\\s+", "")
                 .replaceAll("[^0-9.\\-]", "");
         if (normalized.isEmpty()) return null;
 
-        Double first = null;
         Double last = null;
         for (String seg : normalized.split("-")) {
             if (seg.isEmpty()) continue;
             try {
-                double v = Double.parseDouble(seg);
-                if (first == null) first = v;
-                last = v;
+                last = Double.parseDouble(seg);
             } catch (NumberFormatException ignored) {
-                // 单个数值段解析失败，跳过该段
+                // 跳过无法解析的段
             }
         }
-        if (first == null) return null;
-        return new double[]{first, last};
+        return last != null ? (int) Math.round(last) : null;
     }
 
     /**
-     * 判断规格口径是否落入限制区间（区间判定）。
-     * <p>边界语义：</p>
+     * 兼容旧签名：返回 Double 形式的口径值（取 "-" 后最后数值段）。
+     */
+    public static Double extractCaliber(String spec) {
+        Integer v = extractCaliberValue(spec);
+        return v != null ? v.doubleValue() : null;
+    }
+
+    // ==================== 口径匹配（新 Integer min/max 模型） ====================
+
+    /**
+     * 口径匹配：口径值须满足 {@code min <= caliberValue <= max}。
      * <ul>
-     *   <li>limit 为 null/空 → true（不限口径）；</li>
-     *   <li>limit 解析失败 → WARN 日志并返回 true（fail-open，防存量脏数据导致机台全部落选）；</li>
-     *   <li>spec 区间解析失败 → 回退旧 {@link #extractCaliber(String)} 单值判定逻辑；</li>
-     *   <li>匹配条件：specMin &gt;= limitMin &amp;&amp; specMax &lt;= limitMax。</li>
+     *   <li>min 和 max 均为 null → true（不限口径）</li>
+     *   <li>caliberValue 为 null → true（fail-open，防脏数据导致全部落选）</li>
+     *   <li>仅 min 非 null → caliberValue &gt;= min</li>
+     *   <li>仅 max 非 null → caliberValue &lt;= max</li>
+     *   <li>均非 null → min &lt;= caliberValue &lt;= max</li>
      * </ul>
      */
-    public static boolean isCaliberMatch(String spec, String limit) {
-        // limit 为空 → 不限口径
-        if (limit == null || limit.trim().isEmpty()) return true;
-
-        // limit 解析失败 → fail-open
-        double[] limitRange = extractCaliberRange(limit);
-        if (limitRange == null) {
-            log.warn("机台/产线口径限制格式无法解析，按不限口径处理(fail-open): limit={}", limit);
-            return true;
-        }
-
-        // spec 区间判定
-        double[] specRange = extractCaliberRange(spec);
-        if (specRange != null) {
-            return specRange[0] >= limitRange[0] && specRange[1] <= limitRange[1];
-        }
-
-        // spec 区间解析失败 → 回退旧单值判定逻辑（保持旧行为：单值为 null 视为不限）
-        Double caliber = extractCaliber(spec);
-        if (caliber == null) return true;
-        return caliber >= limitRange[0] && caliber <= limitRange[1];
+    public static boolean isCaliberMatch(Integer caliberValue, Integer min, Integer max) {
+        if (min == null && max == null) return true;
+        if (caliberValue == null) return true; // fail-open
+        if (min != null && caliberValue < min) return false;
+        if (max != null && caliberValue > max) return false;
+        return true;
     }
 
     /**
-     * 判断口径单值是否落入限制区间（兼容旧签名的委托入口）。
+     * 从规格字符串提取口径值后做匹配（便捷委托）。
      */
-    public static boolean isCaliberMatch(Double caliber, String limit) {
-        return isCaliberMatch(caliber == null ? null : String.valueOf(caliber), limit);
+    public static boolean isCaliberMatch(String spec, Integer min, Integer max) {
+        return isCaliberMatch(extractCaliberValue(spec), min, max);
+    }
+
+    // ==================== 紧密度评分（新 Integer min/max 模型） ====================
+
+    /**
+     * 口径紧密度评分：值越大越紧密（机台/产线区间对口径值的冗余裕量越小越优）。
+     * <p>surplus = (max - caliberValue) + (caliberValue - min) = max - min，score = 1000 - surplus。</p>
+     * <p>边界：caliberValue/min/max 任一为 null → 返回 0（中性分）。</p>
+     */
+    public static int caliberFitScore(Integer caliberValue, Integer min, Integer max) {
+        if (caliberValue == null || min == null || max == null) return 0;
+        int surplus = (max - caliberValue) + (caliberValue - min);
+        return 1000 - surplus;
+    }
+
+    /**
+     * 从规格字符串提取口径值后评分（便捷委托）。
+     */
+    public static int caliberFitScore(String spec, Integer min, Integer max) {
+        return caliberFitScore(extractCaliberValue(spec), min, max);
+    }
+
+    // ==================== 辅助 ====================
+
+    /**
+     * 格式化口径范围为展示字符串（如 "0-250"），null 时返回空串。
+     */
+    public static String formatCaliberRange(Integer min, Integer max) {
+        if (min == null && max == null) return "";
+        return (min != null ? min : "?") + "-" + (max != null ? max : "?");
     }
 
     /**

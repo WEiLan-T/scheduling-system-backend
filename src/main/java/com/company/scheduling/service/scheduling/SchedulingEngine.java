@@ -177,7 +177,7 @@ public class SchedulingEngine {
                 } else {
                     wm = candidateWMachines.stream()
                             .filter(m -> !usedW.contains(m.getMachineId()))
-                            .max(Comparator.comparingInt(m -> capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines)))
+                            .max(Comparator.comparingInt(m -> capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), caliberSpec, allWMachines)))
                             .orElse(null);
                 }
                 if (wm != null) {
@@ -210,6 +210,10 @@ public class SchedulingEngine {
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
+                draftItem.put("candidateMachineIds", candidateWMachines.stream()
+                        .map(WeavingMachineStatus::getMachineId).collect(Collectors.toList()));
+                draftItem.put("candidateLineIds", candidateCLines.stream()
+                        .map(CoexLineStatus::getLineId).collect(Collectors.toList()));
                 itemSchedules.add(draftItem);
 
                 if (wDates.startDate != null && wDates.startDate.isBefore(overallStartDate)) overallStartDate = wDates.startDate;
@@ -255,6 +259,10 @@ public class SchedulingEngine {
                         cl != null ? cl.getLineId() : null, coexStart, cCap, wCap, reserveMeters,
                         buildLineSupplySegments(rollDistribution.byLine.get(i), weavingMachineIds, lineCount, i, splitShortfall),
                         warnings));
+                draftItem.put("candidateMachineIds", candidateWMachines.stream()
+                        .map(WeavingMachineStatus::getMachineId).collect(Collectors.toList()));
+                draftItem.put("candidateLineIds", candidateCLines.stream()
+                        .map(CoexLineStatus::getLineId).collect(Collectors.toList()));
                 itemSchedules.add(draftItem);
 
                 if (cDates.startDate.isBefore(overallStartDate)) overallStartDate = cDates.startDate;
@@ -437,7 +445,7 @@ public class SchedulingEngine {
                     wm = candidateWMachines.stream()
                             .filter(m -> !usedW.contains(m.getMachineId()))
                             .max(Comparator.comparingInt(m -> {
-                                int score = capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines);
+                                int score = capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), caliberSpec, allWMachines);
                                 LocalDateTime avail = timeline.getMachineAvailableTime(m.getMachineId(), now);
                                 long penalty = ChronoUnit.HOURS.between(now, avail);
                                 score -= (int) Math.min(penalty, 100);
@@ -485,6 +493,10 @@ public class SchedulingEngine {
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
+                draftItem.put("candidateMachineIds", candidateWMachines.stream()
+                        .map(WeavingMachineStatus::getMachineId).collect(Collectors.toList()));
+                draftItem.put("candidateLineIds", candidateCLines.stream()
+                        .map(CoexLineStatus::getLineId).collect(Collectors.toList()));
                 allResults.add(draftItem);
 
                 if (wDates.startDate != null && wDates.startDate.isBefore(overallStartDate)) overallStartDate = wDates.startDate;
@@ -544,6 +556,10 @@ public class SchedulingEngine {
                         cl != null ? cl.getLineId() : null, coexStart, cCap, wCap, reserveMeters,
                         buildLineSupplySegments(rollDistribution.byLine.get(i), weavingMachineIds, lineCount, i, splitShortfall),
                         timeline.getConflictWarnings()));
+                draftItem.put("candidateMachineIds", candidateWMachines.stream()
+                        .map(WeavingMachineStatus::getMachineId).collect(Collectors.toList()));
+                draftItem.put("candidateLineIds", candidateCLines.stream()
+                        .map(CoexLineStatus::getLineId).collect(Collectors.toList()));
                 allResults.add(draftItem);
 
                 if (cDates.startDate.isBefore(overallStartDate)) overallStartDate = cDates.startDate;

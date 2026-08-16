@@ -139,7 +139,7 @@
                                                 当前在产带坯: <b>{{ m.currentTape }}</b><br/>
                                                 累计产出 / 订单需求: <b style="color:#4ade80">{{ m.accum.toFixed(1) }} / {{ m.total.toFixed(1) }} 米</b><br/>
                                                 当班操作工: {{ m.operator }}<br/>
-                                                设计限制: {{ m.caliberLimit || '无' }}
+                                                设计限制: {{ caliberLabel(m) || '无' }}
                                             </div>
                                         </template>
                                         <div class="node-circle-m" :class="m.statusClass">
@@ -714,10 +714,10 @@
                                 <template #default="scope"><b>{{ scope.row.machineId }}</b></template>
                             </el-table-column>
                             <el-table-column label="口径下限" width="90" align="center">
-                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[0] || '-' }}</template>
+                                <template #default="scope">{{ scope.row.caliberMin ?? '-' }}</template>
                             </el-table-column>
                             <el-table-column label="口径上限" width="90" align="center">
-                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[1] || '-' }}</template>
+                                <template #default="scope">{{ scope.row.caliberMax ?? '-' }}</template>
                             </el-table-column>
                             <el-table-column prop="workshopId" label="所属车间" width="110" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="warpSpec" label="经线型号" width="110" show-overflow-tooltip></el-table-column>
@@ -762,7 +762,7 @@
                                     <el-col :span="12"><el-form-item label="相邻机台"><el-input v-model="machineForm.adjacentMachine"></el-input></el-form-item></el-col>
                                     <el-col :span="12"><el-form-item label="操作工"><el-input v-model="machineForm.operatorName"></el-input></el-form-item></el-col>
                                 </el-row>
-                                <el-alert title="口径上下限提交时将拼接为 “下限-上限” 格式存入 caliberLimit，任一留空则清空该约束。" type="info" :closable="false" show-icon style="margin-top: 5px;"></el-alert>
+                                <el-alert title="口径上下限分别存入数据库，任一留空表示不限该方向口径。" type="info" :closable="false" show-icon style="margin-top: 5px;"></el-alert>
                             </el-form>
                             <template #footer>
                                 <el-button @click="machineDialogVisible = false">取消</el-button>
@@ -811,10 +811,10 @@
                                 <template #default="scope"><b>{{ scope.row.lineId }}</b></template>
                             </el-table-column>
                             <el-table-column label="口径下限" width="100" align="center">
-                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[0] || '-' }}</template>
+                                <template #default="scope">{{ scope.row.caliberMin ?? '-' }}</template>
                             </el-table-column>
                             <el-table-column label="口径上限" width="100" align="center">
-                                <template #default="scope">{{ splitCaliberLimit(scope.row.caliberLimit)[1] || '-' }}</template>
+                                <template #default="scope">{{ scope.row.caliberMax ?? '-' }}</template>
                             </el-table-column>
                             <el-table-column prop="workshopId" label="所属车间" width="140" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="lineStatus" label="产线状态" width="110" align="center">
@@ -849,7 +849,7 @@
                                         </el-select>
                                     </el-form-item></el-col>
                                 </el-row>
-                                <el-alert title="口径上下限提交时将拼接为 “下限-上限” 格式存入 caliberLimit，任一留空则清空该约束。" type="info" :closable="false" show-icon style="margin-top: 5px;"></el-alert>
+                                <el-alert title="口径上下限分别存入数据库，任一留空表示不限该方向口径。" type="info" :closable="false" show-icon style="margin-top: 5px;"></el-alert>
                             </el-form>
                             <template #footer>
                                 <el-button @click="lineDialogVisible = false">取消</el-button>
@@ -1072,7 +1072,7 @@
                                     <el-table-column label="指派机台" width="220">
                                         <template #default="scope">
                                             <el-select v-if="scope.row.weavingStart" v-model="scope.row.plannedMachine" size="small" placeholder="选择机台..." style="width:100%" clearable @change="debouncedApplyAdjustments">
-                                                <el-option v-for="m in machineList" :key="m.machineId" :label="'机台' + m.machineId + (m.caliberLimit ? ' [' + m.caliberLimit + ']' : '')" :value="m.machineId"></el-option>
+                                                <el-option v-for="m in rowCandidateMachines(scope.row)" :key="m.machineId" :label="'机台' + m.machineId + (caliberLabel(m) ? ' [' + caliberLabel(m) + ']' : '')" :value="m.machineId"></el-option>
                                             </el-select>
                                             <el-tag v-else type="success" size="small">库存满足，免织造</el-tag>
                                         </template>
@@ -1117,7 +1117,7 @@
                                     <el-table-column label="指派产线" width="220">
                                         <template #default="scope">
                                             <el-select v-model="scope.row.plannedLine" size="small" placeholder="选择产线..." style="width:100%" clearable @change="debouncedApplyAdjustments">
-                                                <el-option v-for="l in lineList" :key="l.lineId" :label="'产线' + l.lineId + (l.caliberLimit ? ' [' + l.caliberLimit + ']' : '')" :value="l.lineId"></el-option>
+                                                <el-option v-for="l in rowCandidateLines(scope.row)" :key="l.lineId" :label="'产线' + l.lineId + (caliberLabel(l) ? ' [' + caliberLabel(l) + ']' : '')" :value="l.lineId"></el-option>
                                             </el-select>
                                         </template>
                                     </el-table-column>
@@ -1285,7 +1285,7 @@
                                     <template #default="scope">
                                         <template v-if="scope.row.allocationType !== 'coex'">
                                             <el-select v-if="scope.row.weavingStart" v-model="scope.row.plannedMachine" size="small" placeholder="选择机台..." style="width:100%" clearable @change="onInquiryAssignChange(scope.row)">
-                                                <el-option v-for="m in machineList" :key="m.machineId" :label="'机台' + m.machineId + (m.caliberLimit ? ' [' + m.caliberLimit + ']' : '')" :value="m.machineId"></el-option>
+                                                <el-option v-for="m in rowCandidateMachines(scope.row)" :key="m.machineId" :label="'机台' + m.machineId + (caliberLabel(m) ? ' [' + caliberLabel(m) + ']' : '')" :value="m.machineId"></el-option>
                                             </el-select>
                                             <el-tag v-else type="success" size="small">库存满足</el-tag>
                                         </template>
@@ -1296,7 +1296,7 @@
                                     <template #default="scope">
                                         <template v-if="scope.row.allocationType === 'coex'">
                                             <el-select v-model="scope.row.plannedLine" size="small" placeholder="选择产线..." style="width:100%" clearable @change="onInquiryAssignChange(scope.row)">
-                                                <el-option v-for="l in lineList" :key="l.lineId" :label="'产线' + l.lineId + (l.caliberLimit ? ' [' + l.caliberLimit + ']' : '')" :value="l.lineId"></el-option>
+                                                <el-option v-for="l in rowCandidateLines(scope.row)" :key="l.lineId" :label="'产线' + l.lineId + (caliberLabel(l) ? ' [' + caliberLabel(l) + ']' : '')" :value="l.lineId"></el-option>
                                             </el-select>
                                         </template>
                                         <span v-else style="color:#94a3b8; font-size:12px;">—（织造行）</span>

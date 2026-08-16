@@ -38,6 +38,7 @@ public class WeavingEntryRequest {
     private String workshopId;
     private Integer bobbinCount;
     private String machineStatus;
-    private String caliberLimit;
+    private Integer caliberMin;
+    private Integer caliberMax;
     private String adjacentMachine;
 }

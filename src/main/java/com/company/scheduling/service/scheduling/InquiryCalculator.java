@@ -202,7 +202,7 @@ public class InquiryCalculator {
                 } else {
                     wm = candidateWMachines.stream()
                             .filter(m -> !usedW.contains(m.getMachineId()))
-                            .max(Comparator.comparingInt(m -> capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), allWMachines)))
+                            .max(Comparator.comparingInt(m -> capacityMatcher.scoreWeavingMachine(m, proc.getWarpSpec(), caliberSpec, allWMachines)))
                             .orElse(null);
                 }
                 if (wm != null) {
@@ -228,6 +228,10 @@ public class InquiryCalculator {
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
+                draftItem.put("candidateMachineIds", candidateWMachines.stream()
+                        .map(WeavingMachineStatus::getMachineId).collect(Collectors.toList()));
+                draftItem.put("candidateLineIds", candidateCLines.stream()
+                        .map(CoexLineStatus::getLineId).collect(Collectors.toList()));
                 itemSchedules.add(draftItem);
 
                 // 更新 overall 时间范围
@@ -269,6 +273,10 @@ public class InquiryCalculator {
                         cl != null ? cl.getLineId() : null, coexStartRef, cCap, wCap, reserveMeters,
                         buildLineSupplySegments(rollDistribution.byLine.get(i), weavingMachineIds, lineCount, i, splitShortfall),
                         warnings));
+                draftItem.put("candidateMachineIds", candidateWMachines.stream()
+                        .map(WeavingMachineStatus::getMachineId).collect(Collectors.toList()));
+                draftItem.put("candidateLineIds", candidateCLines.stream()
+                        .map(CoexLineStatus::getLineId).collect(Collectors.toList()));
                 itemSchedules.add(draftItem);
 
                 // 更新 overall 时间范围

@@ -24,6 +24,7 @@ public class CoexEntryRequest {
     private Boolean isDataNormal;
     private String remarks;
     private String workshopId;
-    private String caliberLimit;
+    private Integer caliberMin;
+    private Integer caliberMax;
     private String lineStatus;
 }

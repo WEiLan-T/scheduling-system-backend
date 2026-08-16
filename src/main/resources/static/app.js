@@ -261,7 +261,7 @@ const app = createApp({
         const coexForm = reactive({
             id: null, entryDate: getToday(), lineId: '', orderNumber: '',
             finishedPartNumber: '', semiFinishedNumber: '', finishedModelSpec: '',
-            workshopId: '', caliberLimit: '', lineStatus: '在产', productionSpeed: 0,
+            workshopId: '', caliberMin: null, caliberMax: null, lineStatus: '在产', productionSpeed: 0,
             capacityPerDay: 0, isDataNormal: true, tapeDemandQty: 0, tapePartNumber: '', tapeNumber: '', remarks: ''
         });
 
@@ -292,7 +292,7 @@ const app = createApp({
 
         watch(() => coexForm.lineId, (newId) => {
             const line = lineList.value.find(l => l.lineId === newId);
-            if (line) { coexForm.workshopId = line.workshopId; coexForm.caliberLimit = line.caliberLimit; }
+            if (line) { coexForm.workshopId = line.workshopId; coexForm.caliberMin = line.caliberMin; coexForm.caliberMax = line.caliberMax; }
         });
 
         const loadCoexLogs = async () => { try { const res = await axios.get('/api/v1/workshops/integration/coextrusion/logs/list', { skipErrorHandler: true }); coexLogList.value = res.data; } catch (e) { ElMessage.error(errMsg(e)); } };
@@ -561,9 +561,11 @@ const app = createApp({
         // ==========================================
         // 🧶 织造机台档案（复用 machineList 全量数据 + 前端分页）
         // ==========================================
-        // 🌟 口径拼接/拆分工具：提交时 "min-max" 写入 caliberLimit，任一为空则传空串；编辑回填时拆开
-        const buildCaliberLimit = (min, max) => (min !== null && min !== '' && max !== null && max !== '') ? `${min}-${max}` : '';
-        const splitCaliberLimit = (cal) => { const parts = String(cal || '').split('-'); return [parts[0] || '', parts[1] || '']; };
+                // 🌟 口径工具函数：格式化口径范围为展示字符串
+                const caliberLabel = (item) => {
+                    if (item.caliberMin == null && item.caliberMax == null) return '';
+                    return (item.caliberMin ?? '?') + '-' + (item.caliberMax ?? '?');
+                };
 
         const machineArchiveKeyword = ref('');
         const machineArchivePage = ref(1); const machineArchivePageSize = ref(10);
@@ -575,7 +577,7 @@ const app = createApp({
         const filteredMachineArchive = computed(() => {
             const kw = machineArchiveKeyword.value.trim().toLowerCase();
             if (!kw) return machineList.value;
-            return machineList.value.filter(m => [m.machineId, m.workshopId, m.warpSpec, m.weftSpec, m.machineStatus, m.adjacentMachine, m.operatorName, m.caliberLimit].some(v => v != null && String(v).toLowerCase().includes(kw)));
+            return machineList.value.filter(m => [m.machineId, m.workshopId, m.warpSpec, m.weftSpec, m.machineStatus, m.adjacentMachine, m.operatorName, caliberLabel(m)].some(v => v != null && String(v).toLowerCase().includes(kw)));
         });
         const machineArchiveTotal = computed(() => filteredMachineArchive.value.length);
         const paginatedMachineArchiveList = computed(() => {
@@ -587,12 +589,11 @@ const app = createApp({
         const openAddMachineArchive = () => { machineArchiveEditMode.value = false; Object.assign(machineForm, emptyMachineForm()); machineDialogVisible.value = true; };
         const openEditMachineArchive = (row) => {
             machineArchiveEditMode.value = true;
-            const parts = splitCaliberLimit(row.caliberLimit);
-            Object.assign(machineForm, emptyMachineForm(), {
+                        Object.assign(machineForm, emptyMachineForm(), {
                 machineId: row.machineId, workshopId: row.workshopId || '', warpSpec: row.warpSpec || '', weftSpec: row.weftSpec || '',
                 bobbinCount: row.bobbinCount != null ? row.bobbinCount : null, machineStatus: row.machineStatus || '',
                 adjacentMachine: row.adjacentMachine || '', operatorName: row.operatorName || '',
-                caliberMin: parts[0] !== '' ? Number(parts[0]) : null, caliberMax: parts[1] !== '' ? Number(parts[1]) : null
+                caliberMin: row.caliberMin != null ? row.caliberMin : null, caliberMax: row.caliberMax != null ? row.caliberMax : null
             });
             machineDialogVisible.value = true;
         };
@@ -600,7 +601,8 @@ const app = createApp({
             if (!machineForm.machineId) { ElMessage.error('机台号不能为空！'); return; }
             const payload = {
                 machineId: machineForm.machineId,
-                caliberLimit: buildCaliberLimit(machineForm.caliberMin, machineForm.caliberMax),
+                caliberMin: machineForm.caliberMin != null ? machineForm.caliberMin : undefined,
+                caliberMax: machineForm.caliberMax != null ? machineForm.caliberMax : undefined,
                 workshopId: machineForm.workshopId || undefined, warpSpec: machineForm.warpSpec || undefined,
                 weftSpec: machineForm.weftSpec || undefined, bobbinCount: machineForm.bobbinCount != null ? machineForm.bobbinCount : undefined,
                 machineStatus: machineForm.machineStatus || undefined, adjacentMachine: machineForm.adjacentMachine || undefined,
@@ -646,7 +648,7 @@ const app = createApp({
         const filteredLineArchive = computed(() => {
             const kw = lineArchiveKeyword.value.trim().toLowerCase();
             if (!kw) return lineList.value;
-            return lineList.value.filter(l => [l.lineId, l.workshopId, l.lineStatus, l.caliberLimit].some(v => v != null && String(v).toLowerCase().includes(kw)));
+            return lineList.value.filter(l => [l.lineId, l.workshopId, l.lineStatus, caliberLabel(l)].some(v => v != null && String(v).toLowerCase().includes(kw)));
         });
         const lineArchiveTotal = computed(() => filteredLineArchive.value.length);
         const paginatedLineArchiveList = computed(() => {
@@ -658,10 +660,9 @@ const app = createApp({
         const openAddLineArchive = () => { lineArchiveEditMode.value = false; Object.assign(lineForm, emptyLineForm()); lineDialogVisible.value = true; };
         const openEditLineArchive = (row) => {
             lineArchiveEditMode.value = true;
-            const parts = splitCaliberLimit(row.caliberLimit);
             Object.assign(lineForm, emptyLineForm(), {
                 lineId: row.lineId, workshopId: row.workshopId || '', lineStatus: row.lineStatus || '',
-                caliberMin: parts[0] !== '' ? Number(parts[0]) : null, caliberMax: parts[1] !== '' ? Number(parts[1]) : null
+                caliberMin: row.caliberMin != null ? row.caliberMin : null, caliberMax: row.caliberMax != null ? row.caliberMax : null
             });
             lineDialogVisible.value = true;
         };
@@ -669,7 +670,8 @@ const app = createApp({
             if (!lineForm.lineId) { ElMessage.error('产线号不能为空！'); return; }
             const payload = {
                 lineId: lineForm.lineId,
-                caliberLimit: buildCaliberLimit(lineForm.caliberMin, lineForm.caliberMax),
+                caliberMin: lineForm.caliberMin != null ? lineForm.caliberMin : undefined,
+                caliberMax: lineForm.caliberMax != null ? lineForm.caliberMax : undefined,
                 workshopId: lineForm.workshopId || undefined, lineStatus: lineForm.lineStatus || undefined
             };
             try {
@@ -982,9 +984,9 @@ const app = createApp({
             const { minTime, span: totalSpan } = inquiryGanttBounds.value;
             const rowsMap = new Map();
             rowsMap.set('W_UNASSIGNED', { id: 'W_UNASSIGNED', label: '🧶 织造 (待指派)', tasks: [] });
-            machineList.value.forEach(m => rowsMap.set('W_' + m.machineId, { id: 'W_' + m.machineId, label: '机台 ' + m.machineId + (m.caliberLimit ? ' [' + m.caliberLimit + ']' : '') + '#', tasks: [] }));
+            machineList.value.forEach(m => rowsMap.set('W_' + m.machineId, { id: 'W_' + m.machineId, label: '机台 ' + m.machineId + (caliberLabel(m) ? ' [' + caliberLabel(m) + ']' : '') + '#', tasks: [] }));
             rowsMap.set('C_UNASSIGNED', { id: 'C_UNASSIGNED', label: '🗜️ 共挤 (待指派)', tasks: [] });
-            lineList.value.forEach(l => rowsMap.set('C_' + l.lineId, { id: 'C_' + l.lineId, label: '产线 ' + l.lineId + (l.caliberLimit ? ' [' + l.caliberLimit + ']' : '') + '#', tasks: [] }));
+            lineList.value.forEach(l => rowsMap.set('C_' + l.lineId, { id: 'C_' + l.lineId, label: '产线 ' + l.lineId + (caliberLabel(l) ? ' [' + caliberLabel(l) + ']' : '') + '#', tasks: [] }));
             const colors = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ec4899', '#f43f5e'];
             inquiryResult.value.details.forEach((d, idx) => {
                 const color = colors[idx % colors.length];
@@ -1027,13 +1029,23 @@ const app = createApp({
 
         const weavingScheduleDetails = computed(() => {
             if (!estResult.value || !estResult.value.details) return [];
-            return estResult.value.details.filter(d => d.weavingStart);
+            return estResult.value.details.filter(d => d.allocationType === 'weaving');
         });
 
         const coexScheduleDetails = computed(() => {
             if (!estResult.value || !estResult.value.details) return [];
-            return estResult.value.details;
+            return estResult.value.details.filter(d => d.allocationType === 'coex');
         });
+
+        // 口径候选过滤 helper：按行 candidateMachineIds/candidateLineIds 过滤下拉选项；后端未返回时回退全量列表
+        const rowCandidateMachines = (row) => {
+            if (!row.candidateMachineIds || !row.candidateMachineIds.length) return machineList.value;
+            return machineList.value.filter(m => row.candidateMachineIds.includes(m.machineId));
+        };
+        const rowCandidateLines = (row) => {
+            if (!row.candidateLineIds || !row.candidateLineIds.length) return lineList.value;
+            return lineList.value.filter(l => row.candidateLineIds.includes(l.lineId));
+        };
         const capacityDialogVisible = ref(false);
         const capacityPrompt = reactive({ finishedPartNumber: '', tapePartNumber: '', missingField: '' });
         const manualCap = reactive({ weaving: 0, coex: 0, saveToProcess: false });
@@ -1963,11 +1975,11 @@ const app = createApp({
             dailySummaryVisible, dailySummaryLoading, dailySummaryRange, dailySummaryData, loadDailySummary, openDailySummary,
             importResult, lastImportSource, importLoading, inventorySnapshotDate, inventoryFile, handleInventoryFileChange, importInventory, exportInventory, reconciliationData, reconciliationLoading, loadReconciliationReport, confirmReconciliation,
             orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, orderKeyword, orderPage, orderPageSize, paginatedOrderList, orderTotal, orderPartFilterOptions, searchOrders, handleOrderFilterChange, onOrderSizeChange, onOrderPageChange,
-            estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity, capacityFieldLabel, weavingScheduleDetails, coexScheduleDetails,
+            estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity, capacityFieldLabel, weavingScheduleDetails, coexScheduleDetails, rowCandidateMachines, rowCandidateLines,
             inquiryForm, inquiryResult, addInquiryItem, removeInquiryItem, fetchInquiry, inquiryGanttTimeline, inquiryGanttRows,
             inquiryResCounts, debouncedInquiryRecalc, onInquiryAssignChange,
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processKeyword, processPage, processPageSize, paginatedProcessList, processTotal, processMaterialFilterOptions, loadProcessPage, searchProcess, handleProcessFilterChange, onProcessSizeChange, onProcessPageChange,
-            splitCaliberLimit,
+            caliberLabel,
             machineArchiveKeyword, machineArchivePage, machineArchivePageSize, machineArchiveTotal, paginatedMachineArchiveList, machineDialogVisible, machineArchiveEditMode, machineForm, machineFileRef, searchMachineArchive, openAddMachineArchive, openEditMachineArchive, saveMachineArchive, deleteMachineArchive, handleMachineArchiveImport, exportMachineArchiveExcel,
             lineArchiveKeyword, lineArchivePage, lineArchivePageSize, lineArchiveTotal, paginatedLineArchiveList, lineDialogVisible, lineArchiveEditMode, lineForm, lineFileRef, searchLineArchive, openAddLineArchive, openEditLineArchive, saveLineArchive, deleteLineArchive, handleLineArchiveImport, exportLineArchiveExcel,
             allWeavingMachines, factoryLines,

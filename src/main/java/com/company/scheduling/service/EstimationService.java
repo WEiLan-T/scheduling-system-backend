@@ -166,12 +166,10 @@ public class EstimationService {
 
     public Map<String, Object> getAvailableResources(String finishedPartNumber) {
         ProductProcess proc = processRepo.findByFinishedPartNumber(finishedPartNumber).orElse(null);
-        Double caliber = null;
-        if (proc != null) {
-            caliber = capacityMatcher.extractCaliber(proc.getFinishedModelSpec());
-        }
+        String spec = proc != null ? proc.getFinishedModelSpec() : null;
         List<WeavingMachineStatus> allMachines = weavingStatusRepo.findAll();
         List<CoexLineStatus> allLines = coexStatusRepo.findAll();
-        return capacityMatcher.getIdleCompatibleResources(caliber, allMachines, allLines);
+        // 使用完整规格串匹配（与排产/询单引擎保持一致），委托 CapacityMatcher 统一处理
+        return capacityMatcher.getCompatibleResources(spec, allMachines, allLines);
     }
 }

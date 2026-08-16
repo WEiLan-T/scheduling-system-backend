@@ -7,7 +7,9 @@ import java.time.LocalDateTime;
 public class CoexLineStatus {
     @Id private String lineId;
     private String workshopId;
-    private String caliberLimit;
+    private Integer caliberMin;
+    private Integer caliberMax;
+    private String remark;
     private String lineStatus;
     private String enteredBy;
     private LocalDateTime createdAt = LocalDateTime.now();

@@ -80,7 +80,8 @@ public class DataEntryService {
         status.setWeftSpec(req.getWeftSpec());
         status.setBobbinCount(req.getBobbinCount());
         status.setMachineStatus(req.getMachineStatus());
-        status.setCaliberLimit(req.getCaliberLimit());
+        status.setCaliberMin(req.getCaliberMin());
+        status.setCaliberMax(req.getCaliberMax());
         status.setAdjacentMachine(req.getAdjacentMachine());
         status.setOperatorName(req.getOperatorName());
         status.setEnteredBy(currentUser);
@@ -171,7 +172,7 @@ public class DataEntryService {
         }
         CoexLineStatus status = coexStatusRepo.findById(req.getLineId()).orElse(new CoexLineStatus());
         status.setLineId(req.getLineId()); status.setWorkshopId(req.getWorkshopId());
-        status.setCaliberLimit(req.getCaliberLimit()); status.setLineStatus(req.getLineStatus()); status.setEnteredBy(currentUser);
+        status.setCaliberMin(req.getCaliberMin()); status.setCaliberMax(req.getCaliberMax()); status.setLineStatus(req.getLineStatus()); status.setEnteredBy(currentUser);
         coexStatusRepo.save(status);
 
         LocalDate logDate = req.getEntryDate() != null ? req.getEntryDate() : LocalDate.now();
@@ -613,26 +614,13 @@ public class DataEntryService {
 
     // =========================================================================
     // 🏭 织造机台 / 共挤产线 档案 CRUD + Excel 导入导出
-    // （模式照抄工艺库 /process/*；口径字段 caliberLimit 统一存 "min-max" 格式）
     // =========================================================================
-
-    /** 口径范围 "数字-数字" 格式校验（支持小数/负数，如 50-100 / 38.5-65 / -5-100）；捕获组1=下限、组2=上限，供 splitCaliberLimit 安全拆分 */
-    private static final java.util.regex.Pattern CALIBER_LIMIT_PATTERN =
-            java.util.regex.Pattern.compile("^(-?\\d+(?:\\.\\d+)?)-(\\d+(?:\\.\\d+)?)$");
-
-    private void validateCaliberLimit(String caliberLimit) {
-        if (caliberLimit == null || caliberLimit.trim().isEmpty()) return; // 允许留空
-        if (!CALIBER_LIMIT_PATTERN.matcher(caliberLimit.trim()).matches()) {
-            throw new RuntimeException("保存失败：口径范围格式非法（\"" + caliberLimit + "\"），要求\"下限-上限\"两个数字（如 50-100）！");
-        }
-    }
 
     @Transactional
     public String saveOrUpdateWeavingMachine(WeavingMachineStatus machine, String currentUser) {
         if (machine.getMachineId() == null || machine.getMachineId().trim().isEmpty()) {
             throw new RuntimeException("保存失败：机台编号不能为空！");
         }
-        validateCaliberLimit(machine.getCaliberLimit());
         WeavingMachineStatus target = weavingStatusRepo.findById(machine.getMachineId().trim()).orElse(new WeavingMachineStatus());
         boolean isNew = target.getMachineId() == null;
         target.setMachineId(machine.getMachineId().trim());
@@ -641,7 +629,9 @@ public class DataEntryService {
         target.setWeftSpec(machine.getWeftSpec());
         target.setBobbinCount(machine.getBobbinCount());
         target.setMachineStatus(machine.getMachineStatus());
-        target.setCaliberLimit(machine.getCaliberLimit() != null ? machine.getCaliberLimit().trim() : null);
+        target.setCaliberMin(machine.getCaliberMin());
+        target.setCaliberMax(machine.getCaliberMax());
+        target.setRemark(machine.getRemark());
         target.setAdjacentMachine(machine.getAdjacentMachine());
         target.setOperatorName(machine.getOperatorName());
         target.setEnteredBy(currentUser);
@@ -669,13 +659,10 @@ public class DataEntryService {
         int inserted = 0, skipped = 0;
         List<String> warnings = new ArrayList<>();
 
-        // 大文件安全：磁盘临时文件方式打开，绕过 POI 1亿字节硬上限
         try (Workbook workbook = ExcelUtils.openWorkbookSafely(file)) {
             Sheet sheet = workbook.getSheetAt(0);
-            // 动态定位表头行（模板表头在第2行，但按关键字全命中识别，不硬编码行号）；
-            // 关键字放宽为"下限"/"上限"子串，同时命中"口径下限/口径上限"与"口径限制(下限)/(上限)"两类模板表头
             int headerIdx = ExcelUtils.locateHeaderRow(sheet, new String[]{"machine_id", "下限", "上限"}, 10);
-            if (headerIdx < 0) throw new RuntimeException("未找到表头行（需包含 machine_id 及口径下限/上限（或\"口径限制(下限/上限)\"）列）！");
+            if (headerIdx < 0) throw new RuntimeException("未找到表头行（需包含 machine_id 及口径下限/上限列）！");
             Row headerRow = sheet.getRow(headerIdx);
 
             int colId = -1, colWorkshop = -1, colMin = -1, colMax = -1, colStatus = -1, colRemark = -1;
@@ -692,7 +679,6 @@ public class DataEntryService {
 
             for (int i = headerIdx + 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
-                // 遇首个全空行提前终止（防幽灵行）
                 if (row == null) break;
                 boolean allBlank = true;
                 for (int c = row.getFirstCellNum(); c >= 0 && c < row.getLastCellNum(); c++) {
@@ -703,28 +689,28 @@ public class DataEntryService {
                 String machineId = colId >= 0 ? ExcelUtils.getCellStringValue(row.getCell(colId)).trim() : "";
                 if (machineId.isEmpty()) { skipped++; continue; }
 
-                // 口径下限/上限两数值列拼接 "min-max" 写 caliberLimit；非法值记警告并置空
-                String caliberLimit = null;
-                if (colMin >= 0 && colMax >= 0) {
+                // 口径下限/上限直接存 Integer
+                Integer caliberMin = null, caliberMax = null;
+                if (colMin >= 0) {
                     String minStr = ExcelUtils.getCellStringValue(row.getCell(colMin)).trim();
+                    if (!minStr.isEmpty() && !"null".equalsIgnoreCase(minStr)) {
+                        try { caliberMin = (int) Math.round(Double.parseDouble(minStr)); } catch (NumberFormatException e) { warnings.add("第" + (i + 1) + "行：口径下限\"" + minStr + "\"无法解析，已置空"); }
+                    }
+                }
+                if (colMax >= 0) {
                     String maxStr = ExcelUtils.getCellStringValue(row.getCell(colMax)).trim();
-                    if (!minStr.isEmpty() && !maxStr.isEmpty()) {
-                        String candidate = minStr + "-" + maxStr;
-                        if (CALIBER_LIMIT_PATTERN.matcher(candidate).matches()) {
-                            caliberLimit = candidate;
-                        } else {
-                            warnings.add("第" + (i + 1) + "行：口径范围\"" + candidate + "\"格式非法（要求数字-数字），已置空");
-                        }
+                    if (!maxStr.isEmpty() && !"null".equalsIgnoreCase(maxStr)) {
+                        try { caliberMax = (int) Math.round(Double.parseDouble(maxStr)); } catch (NumberFormatException e) { warnings.add("第" + (i + 1) + "行：口径上限\"" + maxStr + "\"无法解析，已置空"); }
                     }
                 }
 
-                // 主键 UPSERT：存在则覆盖更新，不存在则新增
                 WeavingMachineStatus machine = weavingStatusRepo.findById(machineId).orElse(new WeavingMachineStatus());
                 machine.setMachineId(machineId);
                 if (colWorkshop >= 0) machine.setWorkshopId(ExcelUtils.getCellStringValue(row.getCell(colWorkshop)).trim());
                 if (colStatus >= 0) machine.setMachineStatus(ExcelUtils.getCellStringValue(row.getCell(colStatus)).trim());
-                machine.setCaliberLimit(caliberLimit);
-                // 模板"备注"列实体无对应字段，导入时忽略不映射
+                machine.setCaliberMin(caliberMin);
+                machine.setCaliberMax(caliberMax);
+                if (colRemark >= 0) machine.setRemark(ExcelUtils.getCellStringValue(row.getCell(colRemark)).trim());
                 machine.setEnteredBy("EXCEL_IMPORT");
                 weavingStatusRepo.save(machine);
                 inserted++;
@@ -743,7 +729,7 @@ public class DataEntryService {
         try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("织造机台档案");
             Row headerRow = sheet.createRow(0);
-            // 与源模板列一致；caliberLimit 拆回口径下限/口径上限两列
+            // 与源模板列一致；caliberMin/caliberMax 直接写口径下限/口径上限两列
             String[] headers = {"machine_id", "workshop_id", "口径下限", "口径上限", "machine_status", "备注"};
             CellStyle headerStyle = workbook.createCellStyle(); Font font = workbook.createFont(); font.setBold(true); headerStyle.setFont(font);
             for (int i = 0; i < headers.length; i++) { Cell cell = headerRow.createCell(i); cell.setCellValue(headers[i]); cell.setCellStyle(headerStyle); }
@@ -753,11 +739,10 @@ public class DataEntryService {
                 Row row = sheet.createRow(rowIdx++);
                 row.createCell(0).setCellValue(m.getMachineId() != null ? m.getMachineId() : "");
                 row.createCell(1).setCellValue(m.getWorkshopId() != null ? m.getWorkshopId() : "");
-                String[] range = splitCaliberLimit(m.getCaliberLimit());
-                if (range[0] != null) row.createCell(2).setCellValue(Double.parseDouble(range[0])); else row.createCell(2).setCellValue("");
-                if (range[1] != null) row.createCell(3).setCellValue(Double.parseDouble(range[1])); else row.createCell(3).setCellValue("");
+                if (m.getCaliberMin() != null) row.createCell(2).setCellValue(m.getCaliberMin()); else row.createCell(2).setCellValue("");
+                if (m.getCaliberMax() != null) row.createCell(3).setCellValue(m.getCaliberMax()); else row.createCell(3).setCellValue("");
                 row.createCell(4).setCellValue(m.getMachineStatus() != null ? m.getMachineStatus() : "");
-                row.createCell(5).setCellValue(""); // 实体无备注字段，导出留空保持模板同构
+                row.createCell(5).setCellValue(m.getRemark() != null ? m.getRemark() : "");
             }
             for (int i = 0; i < headers.length; i++) sheet.autoSizeColumn(i);
             workbook.write(bos);
@@ -769,29 +754,18 @@ public class DataEntryService {
         }
     }
 
-    /** 口径 "min-max" 拆为两列，无法拆分时返回 [null, null]。
-     *  用正则捕获组拆分（而非 indexOf('-')），避免负下限（如 "-5-100"）被误切成 ["", "5-100"] 导致 NumberFormatException */
-    private String[] splitCaliberLimit(String caliberLimit) {
-        if (caliberLimit != null) {
-            java.util.regex.Matcher m = CALIBER_LIMIT_PATTERN.matcher(caliberLimit.trim());
-            if (m.matches()) {
-                return new String[]{m.group(1), m.group(2)};
-            }
-        }
-        return new String[]{null, null};
-    }
-
     @Transactional
     public String saveOrUpdateCoexLine(CoexLineStatus line, String currentUser) {
         if (line.getLineId() == null || line.getLineId().trim().isEmpty()) {
             throw new RuntimeException("保存失败：产线编号不能为空！");
         }
-        validateCaliberLimit(line.getCaliberLimit());
         CoexLineStatus target = coexStatusRepo.findById(line.getLineId().trim()).orElse(new CoexLineStatus());
         boolean isNew = target.getLineId() == null;
         target.setLineId(line.getLineId().trim());
         target.setWorkshopId(line.getWorkshopId());
-        target.setCaliberLimit(line.getCaliberLimit() != null ? line.getCaliberLimit().trim() : null);
+        target.setCaliberMin(line.getCaliberMin());
+        target.setCaliberMax(line.getCaliberMax());
+        target.setRemark(line.getRemark());
         target.setLineStatus(line.getLineStatus());
         target.setEnteredBy(currentUser);
         coexStatusRepo.save(target);
@@ -819,9 +793,8 @@ public class DataEntryService {
 
         try (Workbook workbook = ExcelUtils.openWorkbookSafely(file)) {
             Sheet sheet = workbook.getSheetAt(0);
-            // 关键字放宽为"下限"/"上限"子串，同时命中"口径下限/口径上限"与"口径限制（下限）/（上限）"两类模板表头
             int headerIdx = ExcelUtils.locateHeaderRow(sheet, new String[]{"line_id", "下限", "上限"}, 10);
-            if (headerIdx < 0) throw new RuntimeException("未找到表头行（需包含 line_id 及口径下限/上限（或\"口径限制(下限/上限)\"）列）！");
+            if (headerIdx < 0) throw new RuntimeException("未找到表头行（需包含 line_id 及口径下限/上限列）！");
             Row headerRow = sheet.getRow(headerIdx);
 
             int colId = -1, colWorkshop = -1, colMin = -1, colMax = -1, colStatus = -1, colRemark = -1;
@@ -848,17 +821,17 @@ public class DataEntryService {
                 String lineId = colId >= 0 ? ExcelUtils.getCellStringValue(row.getCell(colId)).trim() : "";
                 if (lineId.isEmpty()) { skipped++; continue; }
 
-                String caliberLimit = null;
-                if (colMin >= 0 && colMax >= 0) {
+                Integer caliberMin = null, caliberMax = null;
+                if (colMin >= 0) {
                     String minStr = ExcelUtils.getCellStringValue(row.getCell(colMin)).trim();
+                    if (!minStr.isEmpty() && !"null".equalsIgnoreCase(minStr)) {
+                        try { caliberMin = (int) Math.round(Double.parseDouble(minStr)); } catch (NumberFormatException e) { warnings.add("第" + (i + 1) + "行：口径下限\"" + minStr + "\"无法解析，已置空"); }
+                    }
+                }
+                if (colMax >= 0) {
                     String maxStr = ExcelUtils.getCellStringValue(row.getCell(colMax)).trim();
-                    if (!minStr.isEmpty() && !maxStr.isEmpty()) {
-                        String candidate = minStr + "-" + maxStr;
-                        if (CALIBER_LIMIT_PATTERN.matcher(candidate).matches()) {
-                            caliberLimit = candidate;
-                        } else {
-                            warnings.add("第" + (i + 1) + "行：口径范围\"" + candidate + "\"格式非法（要求数字-数字），已置空");
-                        }
+                    if (!maxStr.isEmpty() && !"null".equalsIgnoreCase(maxStr)) {
+                        try { caliberMax = (int) Math.round(Double.parseDouble(maxStr)); } catch (NumberFormatException e) { warnings.add("第" + (i + 1) + "行：口径上限\"" + maxStr + "\"无法解析，已置空"); }
                     }
                 }
 
@@ -866,7 +839,9 @@ public class DataEntryService {
                 line.setLineId(lineId);
                 if (colWorkshop >= 0) line.setWorkshopId(ExcelUtils.getCellStringValue(row.getCell(colWorkshop)).trim());
                 if (colStatus >= 0) line.setLineStatus(ExcelUtils.getCellStringValue(row.getCell(colStatus)).trim());
-                line.setCaliberLimit(caliberLimit);
+                line.setCaliberMin(caliberMin);
+                line.setCaliberMax(caliberMax);
+                if (colRemark >= 0) line.setRemark(ExcelUtils.getCellStringValue(row.getCell(colRemark)).trim());
                 line.setEnteredBy("EXCEL_IMPORT");
                 coexStatusRepo.save(line);
                 inserted++;
@@ -894,11 +869,10 @@ public class DataEntryService {
                 Row row = sheet.createRow(rowIdx++);
                 row.createCell(0).setCellValue(l.getLineId() != null ? l.getLineId() : "");
                 row.createCell(1).setCellValue(l.getWorkshopId() != null ? l.getWorkshopId() : "");
-                String[] range = splitCaliberLimit(l.getCaliberLimit());
-                if (range[0] != null) row.createCell(2).setCellValue(Double.parseDouble(range[0])); else row.createCell(2).setCellValue("");
-                if (range[1] != null) row.createCell(3).setCellValue(Double.parseDouble(range[1])); else row.createCell(3).setCellValue("");
+                if (l.getCaliberMin() != null) row.createCell(2).setCellValue(l.getCaliberMin()); else row.createCell(2).setCellValue("");
+                if (l.getCaliberMax() != null) row.createCell(3).setCellValue(l.getCaliberMax()); else row.createCell(3).setCellValue("");
                 row.createCell(4).setCellValue(l.getLineStatus() != null ? l.getLineStatus() : "");
-                row.createCell(5).setCellValue("");
+                row.createCell(5).setCellValue(l.getRemark() != null ? l.getRemark() : "");
             }
             for (int i = 0; i < headers.length; i++) sheet.autoSizeColumn(i);
             workbook.write(bos);
