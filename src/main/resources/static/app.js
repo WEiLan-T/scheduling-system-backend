@@ -48,6 +48,24 @@ const app = createApp({
         // 🌟 通用表头筛选选项构建：去重 + 排序 + 转 {text, value} 数组
         const distinctFilterOptions = (values) => Array.from(new Set((values || []).filter(v => v != null && String(v).trim() !== ''))).sort().map(v => ({ text: String(v), value: v }));
 
+        // 🌟 通用客户端列筛选方法（供所有表复用）
+        const clientColumnFilter = (value, row, column) => {
+            const prop = column.property;
+            const cellValue = row[prop];
+            if (cellValue == null) return false;
+            return String(cellValue) === String(value);
+        };
+        // 🌟 为某列动态生成 filter options（从当前数据源提取 distinct 值）
+        const colFilterOpts = (dataList, prop) => {
+            const list = dataList.value || dataList;
+            const seen = new Set();
+            (Array.isArray(list) ? list : []).forEach(row => {
+                const v = row[prop];
+                if (v != null && String(v).trim() !== '') seen.add(String(v));
+            });
+            return Array.from(seen).sort().map(v => ({ text: v, value: v }));
+        };
+
         const isLoggedIn = ref(false);
         const currentUser = ref('');
         const activeMenu = ref('order-dashboard');
@@ -202,8 +220,11 @@ const app = createApp({
         };
         const searchWeaving = () => { weavingPage.value = 1; loadWeavingPage(); };
         const handleWeavingFilterChange = ({ property, filters }) => {
-            if (property === 'machineNo' || property === 'shiftType') weavingFilters[property] = (filters && filters.length > 0) ? filters[0] : null;
-            weavingPage.value = 1; loadWeavingPage();
+            if (property === 'machineNo' || property === 'shiftType') {
+                weavingFilters[property] = (filters && filters.length > 0) ? filters[0] : null;
+                weavingPage.value = 1; loadWeavingPage();
+            }
+            // 其他列为客户端筛选，无需服务端重载
         };
         const onWeavingSizeChange = () => { weavingPage.value = 1; loadWeavingPage(); };
         const onWeavingPageChange = () => { loadWeavingPage(); };
@@ -312,8 +333,11 @@ const app = createApp({
         };
         const searchCoex = () => { coexPage.value = 1; loadCoexPage(); };
         const handleCoexFilterChange = ({ property, filters }) => {
-            if (property === 'machineNo' || property === 'productModel' || property === 'color') coexFilters[property] = (filters && filters.length > 0) ? filters[0] : null;
-            coexPage.value = 1; loadCoexPage();
+            if (property === 'machineNo' || property === 'productModel' || property === 'color') {
+                coexFilters[property] = (filters && filters.length > 0) ? filters[0] : null;
+                coexPage.value = 1; loadCoexPage();
+            }
+            // 其他列为客户端筛选，无需服务端重载
         };
         const onCoexSizeChange = () => { coexPage.value = 1; loadCoexPage(); };
         const onCoexPageChange = () => { loadCoexPage(); };
@@ -545,8 +569,11 @@ const app = createApp({
         };
         const searchProcess = () => { processPage.value = 1; loadProcessPage(); };
         const handleProcessFilterChange = ({ property, filters }) => {
-            if (property === 'materialType') processFilters.materialType = (filters && filters.length > 0) ? filters[0] : null;
-            processPage.value = 1; loadProcessPage();
+            if (property === 'materialType') {
+                processFilters.materialType = (filters && filters.length > 0) ? filters[0] : null;
+                processPage.value = 1; loadProcessPage();
+            }
+            // 其他列为客户端筛选，无需服务端重载
         };
         const onProcessSizeChange = () => { processPage.value = 1; loadProcessPage(); };
         const onProcessPageChange = () => { loadProcessPage(); };
@@ -804,7 +831,6 @@ const app = createApp({
             customerName: '',
             plannedProductionDays: 30,
             globalBufferDays: 3,
-            weavingAdvanceDays: 2,
             weavingReserveDays: 0,
             items: [{ finishedPartNumber: '', productName: '', modelSpec: '', metersPerRoll: 0, rollCount: 0 }]
         });
@@ -829,7 +855,6 @@ const app = createApp({
                 const payload = {
                     plannedProductionDays: inquiryForm.plannedProductionDays,
                     globalBufferDays: inquiryForm.globalBufferDays,
-                    weavingAdvanceDays: inquiryForm.weavingAdvanceDays,
                     weavingReserveDays: inquiryForm.weavingReserveDays || 0,
                     items: inquiryForm.items
                         .filter(i => i.finishedPartNumber)
@@ -1022,7 +1047,6 @@ const app = createApp({
             orderId: '',
             itemAdjustments: [],
             globalBufferDays: 3,
-            weavingAdvanceDays: 2,
             weavingReserveDays: 0
         });
         const estResult = ref(null);
@@ -1077,7 +1101,6 @@ const app = createApp({
                 const res = await axios.post('/api/v1/workshops/estimation/preview-multi', {
                     orderIds: selectedOrderIds.value,
                     globalBufferDays: estForm.globalBufferDays,
-                    weavingAdvanceDays: estForm.weavingAdvanceDays,
                     weavingReserveDays: estForm.weavingReserveDays || 0
                 }, { skipErrorHandler: true });
                 const data = res.data;
@@ -1693,24 +1716,47 @@ const app = createApp({
             if (!estResult.value || !estResult.value.details) return;
             loading.value = true;
             try {
-                const adjustments = estResult.value.details
-                    // 🌟 任务#24修复：下拉换机台/产线（plannedMachine/plannedLine）也需触发重算，故纳入过滤条件
-                    .filter(d => d.manualWeavingCap || d.manualCoexCap || d.manualWeavingMachineCount || d.manualCoexLineCount || d.plannedMachine || d.plannedLine)
-                    .map(d => ({
-                        finishedPartNumber: d.finishedPartNumber,
-                        manualWeavingCapacity: d.manualWeavingCap || undefined,
-                        manualCoexCapacity: d.manualCoexCap || undefined,
-                        manualWeavingMachineCount: d.manualWeavingMachineCount || undefined,
-                        manualCoexLineCount: d.manualCoexLineCount || undefined,
-                        // 🌟 任务#24修复：补交指派 id，使下拉换机台/产线后重算真正生效
-                        assignedMachineIds: d.plannedMachine ? [d.plannedMachine] : undefined,
-                        assignedLineIds: d.plannedLine ? [d.plannedLine] : undefined
-                    }));
+                const adjustmentsMap = new Map();
+                estResult.value.details.forEach(d => {
+                    const hasAdj = d.manualWeavingCap != null || d.manualCoexCap != null
+                        || d.manualWeavingMachineCount != null || d.manualCoexLineCount != null
+                        || d.plannedMachine || d.plannedLine;
+                    if (!hasAdj) return;
+                    const pn = d.finishedPartNumber;
+                    if (!adjustmentsMap.has(pn)) {
+                        adjustmentsMap.set(pn, {
+                            finishedPartNumber: pn,
+                            manualWeavingCapacity: undefined,
+                            manualCoexCapacity: undefined,
+                            manualWeavingMachineCount: undefined,
+                            manualCoexLineCount: undefined,
+                            assignedMachineIds: undefined,
+                            assignedLineIds: undefined
+                        });
+                    }
+                    const adj = adjustmentsMap.get(pn);
+                    // 织造行提供织造参数，共挤行提供共挤参数
+                    if (d.allocationType === 'weaving') {
+                        if (d.manualWeavingCap) adj.manualWeavingCapacity = d.manualWeavingCap;
+                        if (d.manualWeavingMachineCount) adj.manualWeavingMachineCount = d.manualWeavingMachineCount;
+                        if (d.plannedMachine) {
+                            adj.assignedMachineIds = adj.assignedMachineIds || [];
+                            adj.assignedMachineIds.push(d.plannedMachine);
+                        }
+                    } else if (d.allocationType === 'coex') {
+                        if (d.manualCoexCap) adj.manualCoexCapacity = d.manualCoexCap;
+                        if (d.manualCoexLineCount) adj.manualCoexLineCount = d.manualCoexLineCount;
+                        if (d.plannedLine) {
+                            adj.assignedLineIds = adj.assignedLineIds || [];
+                            adj.assignedLineIds.push(d.plannedLine);
+                        }
+                    }
+                });
+                const adjustments = Array.from(adjustmentsMap.values());
                 
                 const reqBody = {
                     orderId: estResult.value.orderId,
                     globalBufferDays: estForm.globalBufferDays,
-                    weavingAdvanceDays: estForm.weavingAdvanceDays,
                     weavingReserveDays: estForm.weavingReserveDays || 0,
                     itemAdjustments: adjustments.length > 0 ? adjustments : undefined
                 };
@@ -1964,24 +2010,87 @@ const app = createApp({
             if (newVal === 'inquiry') { /* 询单页面按需加载 */ }
         });
 
-
+        // ==========================================
+        // 🌟 全表全列客户端筛选 filter options
+        // ==========================================
+        // 织造台账（~20列）
+        const wF = (p) => colFilterOpts(paginatedWeavingLogs, p);
+        const weavingEntryDateFilterOpts = computed(() => wF('entryDate'));
+        const weavingPartNumberFilterOpts = computed(() => wF('partNumber'));
+        const weavingTapeCodeFilterOpts = computed(() => wF('tapeCode'));
+        const weavingModelSpecFilterOpts = computed(() => wF('modelSpec'));
+        const weavingWarpThreadFilterOpts = computed(() => wF('warpThread'));
+        const weavingWeftThreadFilterOpts = computed(() => wF('weftThread'));
+        const weavingDataQualityFilterOpts = computed(() => wF('dataQualityFlag'));
+        const weavingWorkerNameFilterOpts = computed(() => wF('workerName'));
+        const weavingShiftOutputFilterOpts = computed(() => wF('shiftOutput'));
+        // 共挤台账（~12列）
+        const cF = (p) => colFilterOpts(paginatedCoexLogs, p);
+        const coexLogDateFilterOpts = computed(() => cF('logDate'));
+        const coexProductTypeFilterOpts = computed(() => cF('productType'));
+        const coexMainMaterialFilterOpts = computed(() => cF('mainMaterial'));
+        const coexWeightKgFilterOpts = computed(() => cF('weightKg'));
+        const coexCapacityMetersFilterOpts = computed(() => cF('capacityMeters'));
+        const coexLeakageKgFilterOpts = computed(() => cF('leakageKg'));
+        const coexSourceYearFilterOpts = computed(() => cF('sourceFileYear'));
+        const coexDataQualityFilterOpts = computed(() => cF('dataQualityFlag'));
+        // 库存表
+        const iF = (p) => colFilterOpts(paginatedInventoryList, p);
+        const invPartNumberFilterOpts = computed(() => iF('partNumber'));
+        const invModelSpecFilterOpts = computed(() => iF('modelSpec'));
+        const invSnapshotDateFilterOpts = computed(() => iF('snapshotDate'));
+        // 工艺路线表
+        const pF = (p) => colFilterOpts(paginatedProcessList, p);
+        const procFinishedPnFilterOpts = computed(() => pF('finishedPartNumber'));
+        const procTapePnFilterOpts = computed(() => pF('tapePartNumber'));
+        const procFinishedSpecFilterOpts = computed(() => pF('finishedModelSpec'));
+        const procTapeSpecFilterOpts = computed(() => pF('tapeModelSpec'));
+        // 订单表
+        const oF = (p) => colFilterOpts(paginatedOrderList, p);
+        const orderIdFilterOpts = computed(() => oF('orderId'));
+        const orderCustomerFilterOpts = computed(() => oF('customerName'));
+        const orderSalespersonFilterOpts = computed(() => oF('salesperson'));
+        const orderOrderDateFilterOpts = computed(() => oF('orderDate'));
+        const orderDeliveryDateFilterOpts = computed(() => oF('deliveryDate'));
+        // 机台档案表
+        const mF = (p) => colFilterOpts(filteredMachineArchive, p);
+        const machineIdFilterOpts = computed(() => mF('machineId'));
+        const machineCaliberMinFilterOpts = computed(() => mF('caliberMin'));
+        const machineCaliberMaxFilterOpts = computed(() => mF('caliberMax'));
+        const machineWorkshopFilterOpts = computed(() => mF('workshopId'));
+        const machineStatusFilterOpts = computed(() => mF('machineStatus'));
+        const machineOperatorFilterOpts = computed(() => mF('operatorName'));
+        // 产线档案表
+        const lF = (p) => colFilterOpts(filteredLineArchive, p);
+        const lineIdFilterOpts = computed(() => lF('lineId'));
+        const lineCaliberMinFilterOpts = computed(() => lF('caliberMin'));
+        const lineCaliberMaxFilterOpts = computed(() => lF('caliberMax'));
+        const lineWorkshopFilterOpts = computed(() => lF('workshopId'));
+        const lineStatusFilterOpts = computed(() => lF('lineStatus'));
 
         return {
             isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect, refreshCurrentPage, machineList, lineList,
             weavingForm, weavingLogList, submitWeaving, openEditWeaving, deleteWeaving, resetWeavingForm, weavingFileRef, exportWeavingExcel, handleWeavingImport, weavingKeyword, weavingMachineFilterOptions, weavingShiftFilterOptions, weavingPage, weavingPageSize, paginatedWeavingLogs, weavingTotal, loadWeavingPage, searchWeaving, handleWeavingFilterChange, onWeavingSizeChange, onWeavingPageChange, recheckGradeB,
+            clientColumnFilter, weavingEntryDateFilterOpts, weavingPartNumberFilterOpts, weavingTapeCodeFilterOpts, weavingModelSpecFilterOpts, weavingWarpThreadFilterOpts, weavingWeftThreadFilterOpts, weavingDataQualityFilterOpts, weavingWorkerNameFilterOpts, weavingShiftOutputFilterOpts,
             coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm, coexFileRef, exportCoexExcel, handleCoexImport, coexKeyword, coexMachineFilterOptions, coexModelFilterOptions, coexColorFilterOptions, coexPage, coexPageSize, paginatedCoexLogs, coexTotal, loadCoexPage, searchCoex, handleCoexFilterChange, onCoexSizeChange, onCoexPageChange, coexImportYear,
+            coexLogDateFilterOpts, coexProductTypeFilterOpts, coexMainMaterialFilterOpts, coexWeightKgFilterOpts, coexCapacityMetersFilterOpts, coexLeakageKgFilterOpts, coexSourceYearFilterOpts, coexDataQualityFilterOpts,
             invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv, invPage, invPageSize, paginatedInventoryList, invTotal, invStockTypeFilterOptions, searchInventory, handleInvFilterChange, onInvSizeChange, onInvPageChange,
+            invPartNumberFilterOpts, invModelSpecFilterOpts, invSnapshotDateFilterOpts,
             splitDialogVisible, splitSaving, splitSource, splitLengths, splitTotal, openSplitInv, addSplitRow, removeSplitRow, submitSplit,
             dailySummaryVisible, dailySummaryLoading, dailySummaryRange, dailySummaryData, loadDailySummary, openDailySummary,
             importResult, lastImportSource, importLoading, inventorySnapshotDate, inventoryFile, handleInventoryFileChange, importInventory, exportInventory, reconciliationData, reconciliationLoading, loadReconciliationReport, confirmReconciliation,
             orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, orderKeyword, orderPage, orderPageSize, paginatedOrderList, orderTotal, orderPartFilterOptions, searchOrders, handleOrderFilterChange, onOrderSizeChange, onOrderPageChange,
+            orderIdFilterOpts, orderCustomerFilterOpts, orderSalespersonFilterOpts, orderOrderDateFilterOpts, orderDeliveryDateFilterOpts,
             estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity, capacityFieldLabel, weavingScheduleDetails, coexScheduleDetails, rowCandidateMachines, rowCandidateLines,
             inquiryForm, inquiryResult, addInquiryItem, removeInquiryItem, fetchInquiry, inquiryGanttTimeline, inquiryGanttRows,
             inquiryResCounts, debouncedInquiryRecalc, onInquiryAssignChange,
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processKeyword, processPage, processPageSize, paginatedProcessList, processTotal, processMaterialFilterOptions, loadProcessPage, searchProcess, handleProcessFilterChange, onProcessSizeChange, onProcessPageChange,
+            procFinishedPnFilterOpts, procTapePnFilterOpts, procFinishedSpecFilterOpts, procTapeSpecFilterOpts,
             caliberLabel,
             machineArchiveKeyword, machineArchivePage, machineArchivePageSize, machineArchiveTotal, paginatedMachineArchiveList, machineDialogVisible, machineArchiveEditMode, machineForm, machineFileRef, searchMachineArchive, openAddMachineArchive, openEditMachineArchive, saveMachineArchive, deleteMachineArchive, handleMachineArchiveImport, exportMachineArchiveExcel,
+            machineIdFilterOpts, machineCaliberMinFilterOpts, machineCaliberMaxFilterOpts, machineWorkshopFilterOpts, machineStatusFilterOpts, machineOperatorFilterOpts,
             lineArchiveKeyword, lineArchivePage, lineArchivePageSize, lineArchiveTotal, paginatedLineArchiveList, lineDialogVisible, lineArchiveEditMode, lineForm, lineFileRef, searchLineArchive, openAddLineArchive, openEditLineArchive, saveLineArchive, deleteLineArchive, handleLineArchiveImport, exportLineArchiveExcel,
+            lineIdFilterOpts, lineCaliberMinFilterOpts, lineCaliberMaxFilterOpts, lineWorkshopFilterOpts, lineStatusFilterOpts,
             allWeavingMachines, factoryLines,
             executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos, dashboardViewDays,
             orderFileRef, exportOrderExcel, handleOrderImport, orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX,

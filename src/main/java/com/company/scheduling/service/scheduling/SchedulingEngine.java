@@ -60,7 +60,7 @@ public class SchedulingEngine {
         CapacityProvider.CapacitySnapshot capSnapshot = capacityProvider.loadSnapshot();
 
         int bufferDays = req.getGlobalBufferDays() != null ? req.getGlobalBufferDays() : 3;
-        int weaveAdvance = req.getWeavingAdvanceDays() != null ? req.getWeavingAdvanceDays() : 2;
+        // 算法简化：已取消 weavingAdvanceDays，织造结束时间直接对齐 deadline
 
         LocalDateTime overallStartDate = LocalDateTime.MAX;
         LocalDateTime overallEndDate = LocalDateTime.MIN;
@@ -168,6 +168,8 @@ public class SchedulingEngine {
             Set<String> usedC = new HashSet<>();
             // 需求6：按分配顺序收集织造机台ID，供共挤换带坯模拟使用
             List<String> weavingMachineIds = new ArrayList<>();
+            LocalDateTime earliestWeavingStart = LocalDateTime.MAX;
+            LocalDateTime latestWeavingEnd = LocalDateTime.MIN;
 
             // 织造独立分配
             for (int i = 0; i < machineCount; i++) {
@@ -186,9 +188,9 @@ public class SchedulingEngine {
                 }
 
                 BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
-                LocalDateTime weavingEnd = deadline.minusDays(weaveAdvance);
-                // 储备偏移：织造起点相对共挤再提前 reserveAdvanceDays 天（缺省 0 天时无偏移）；
-                // 与 weaveAdvance（织造提前结束天数）各自独立叠加，互不干扰
+                // 算法简化：织造结束时间直接对齐 deadline（已取消 weavingAdvanceDays）
+                LocalDateTime weavingEnd = deadline;
+                // 储备偏移：织造起点相对共挤再提前 reserveAdvanceDays 天（缺省 0 天时无偏移）
                 LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue()).minusDays(reserveAdvanceDays);
 
                 if (weavingStart.isBefore(now)) {
@@ -217,7 +219,13 @@ public class SchedulingEngine {
                 itemSchedules.add(draftItem);
 
                 if (wDates.startDate != null && wDates.startDate.isBefore(overallStartDate)) overallStartDate = wDates.startDate;
+                if (wDates.startDate != null && wDates.startDate.isBefore(earliestWeavingStart)) earliestWeavingStart = wDates.startDate;
+                if (wDates.endDate != null && wDates.endDate.isAfter(latestWeavingEnd)) latestWeavingEnd = wDates.endDate;
             }
+
+            // 共挤基准时点：储备就绪 = 最早织造开工 + 储备提前天数
+            LocalDateTime coexBaseStart = earliestWeavingStart != LocalDateTime.MAX
+                    ? earliestWeavingStart.plusDays(reserveAdvanceDays) : now;
 
             // 共挤独立分配
             for (int i = 0; i < lineCount; i++) {
@@ -230,8 +238,17 @@ public class SchedulingEngine {
                 if (cl != null) usedC.add(cl.getLineId());
 
                 BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+                // 共挤结束：不早于 deadline，且不早于织造结束（共挤连续不停机）
                 LocalDateTime coexEnd = deadline;
+                if (latestWeavingEnd != LocalDateTime.MIN && latestWeavingEnd.isAfter(coexEnd)) {
+                    coexEnd = latestWeavingEnd;
+                }
+                // 共挤开始：从 coexEnd 倒推产能时长，但不早于储备就绪时点
                 LocalDateTime coexStart = coexEnd.minusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
+                if (coexStart.isBefore(coexBaseStart)) {
+                    coexStart = coexBaseStart;
+                    coexEnd = coexStart.plusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
+                }
 
                 if (coexStart.isBefore(now)) {
                     long shiftMinutes = ChronoUnit.MINUTES.between(coexStart, now);
@@ -282,7 +299,7 @@ public class SchedulingEngine {
         if (orderIds == null || orderIds.isEmpty()) throw new RuntimeException("订单列表不能为空！");
 
         int bufferDays = req.getGlobalBufferDays() != null ? req.getGlobalBufferDays() : 3;
-        int weaveAdvance = req.getWeavingAdvanceDays() != null ? req.getWeavingAdvanceDays() : 2;
+        // 算法简化：已取消 weavingAdvanceDays，织造结束时间直接对齐 deadline
 
         // 1. 🌟 性能优化：批量查询所有订单 + 一次性加载产能缓存
         List<ProductionOrder> allOrdersBatch = orderRepo.findByOrderIdIn(orderIds);
@@ -435,6 +452,8 @@ public class SchedulingEngine {
             Set<String> usedC = new HashSet<>();
             // 需求6：按分配顺序收集织造机台ID，供共挤换带坯模拟使用
             List<String> weavingMachineIds = new ArrayList<>();
+            LocalDateTime earliestWeavingStart = LocalDateTime.MAX;
+            LocalDateTime latestWeavingEnd = LocalDateTime.MIN;
 
             // 织造独立分配
             for (int i = 0; i < machineCount; i++) {
@@ -460,7 +479,8 @@ public class SchedulingEngine {
                 LocalDateTime machineAvailableTime = wm != null ? timeline.getMachineAvailableTime(wm.getMachineId(), now) : now;
 
                 BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
-                LocalDateTime weavingEnd = deadline.minusDays(weaveAdvance);
+                // 算法简化：织造结束时间直接对齐 deadline（已取消 weavingAdvanceDays）
+                LocalDateTime weavingEnd = deadline;
                 // 储备偏移：织造起点相对共挤再提前 reserveAdvanceDays 天（缺省 0 天时无偏移）
                 LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue()).minusDays(reserveAdvanceDays);
 
@@ -500,7 +520,13 @@ public class SchedulingEngine {
                 allResults.add(draftItem);
 
                 if (wDates.startDate != null && wDates.startDate.isBefore(overallStartDate)) overallStartDate = wDates.startDate;
+                if (wDates.startDate != null && wDates.startDate.isBefore(earliestWeavingStart)) earliestWeavingStart = wDates.startDate;
+                if (wDates.endDate != null && wDates.endDate.isAfter(latestWeavingEnd)) latestWeavingEnd = wDates.endDate;
             }
+
+            // 共挤基准时点：储备就绪 = 最早织造开工 + 储备提前天数
+            LocalDateTime coexBaseStart = earliestWeavingStart != LocalDateTime.MAX
+                    ? earliestWeavingStart.plusDays(reserveAdvanceDays) : now;
 
             // 共挤独立分配
             for (int i = 0; i < lineCount; i++) {
@@ -518,8 +544,17 @@ public class SchedulingEngine {
                 LocalDateTime lineAvailableTime = cl != null ? timeline.getLineAvailableTime(cl.getLineId(), now) : now;
 
                 BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+                // 共挤结束：不早于 deadline，且不早于织造结束（共挤连续不停机）
                 LocalDateTime coexEnd = deadline;
+                if (latestWeavingEnd != LocalDateTime.MIN && latestWeavingEnd.isAfter(coexEnd)) {
+                    coexEnd = latestWeavingEnd;
+                }
+                // 共挤开始：从 coexEnd 倒推产能时长，但不早于储备就绪时点
                 LocalDateTime coexStart = coexEnd.minusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
+                if (coexStart.isBefore(coexBaseStart)) {
+                    coexStart = coexBaseStart;
+                    coexEnd = coexStart.plusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
+                }
 
                 if (coexStart.isBefore(lineAvailableTime)) {
                     long shift = ChronoUnit.MINUTES.between(coexStart, lineAvailableTime);

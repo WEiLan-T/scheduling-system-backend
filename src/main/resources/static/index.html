@@ -269,13 +269,13 @@
                             <el-tag type="info" style="margin-left:auto">共 {{ weavingTotal }} 条</el-tag>
                         </div>
                         <el-table :data="paginatedWeavingLogs" border stripe size="small" v-loading="loading" style="width: 100%" @filter-change="handleWeavingFilterChange">
-                            <el-table-column prop="entryDate" label="账期" width="95" fixed></el-table-column>
-                            <el-table-column prop="partNumber" label="零件号" width="100" fixed></el-table-column>
-                            <el-table-column prop="tapeCode" label="带坯编号" width="95"></el-table-column>
+                            <el-table-column prop="entryDate" label="账期" width="95" fixed :filters="weavingEntryDateFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="partNumber" label="零件号" width="100" fixed :filters="weavingPartNumberFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="tapeCode" label="带坯编号" width="95" :filters="weavingTapeCodeFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="machineNo" label="机台" width="60" align="center" :filters="weavingMachineFilterOptions"></el-table-column>
-                            <el-table-column prop="modelSpec" label="型号规格" width="130" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="warpThread" label="经线" width="100" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="weftThread" label="纬线" width="120" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="modelSpec" label="型号规格" width="130" show-overflow-tooltip :filters="weavingModelSpecFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="warpThread" label="经线" width="100" show-overflow-tooltip :filters="weavingWarpThreadFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="weftThread" label="纬线" width="120" show-overflow-tooltip :filters="weavingWeftThreadFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="warpWeightPerMeter" label="经米重(g/m)" width="100" align="right"></el-table-column>
                             <el-table-column prop="weftWeightPerMeter3000D" label="纬米重3000D" width="100" align="right"></el-table-column>
                             <el-table-column prop="weftWeightPerMeter2000D" label="纬米重2000D" width="100" align="right"></el-table-column>
@@ -283,13 +283,13 @@
                             <el-table-column prop="weftUsageKgPerMeter3000D" label="纬耗3000D(kg/m)" width="115" align="right"></el-table-column>
                             <el-table-column prop="weftUsageKgPerMeter2000D" label="纬耗2000D(kg/m)" width="115" align="right"></el-table-column>
                             <el-table-column prop="shiftType" label="班次" width="60" align="center" :filters="weavingShiftFilterOptions"><template #default="scope"><el-tag :type="scope.row.shiftType === '白' ? 'warning' : 'info'" size="small">{{ scope.row.shiftType }}班</el-tag></template></el-table-column>
-                            <el-table-column prop="workerName" label="姓名" width="80" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="shiftOutput" label="产量(米)" width="90"><template #default="scope"><b style="color: #16a34a;">+ {{ scope.row.shiftOutput }}</b></template></el-table-column>
+                            <el-table-column prop="workerName" label="姓名" width="80" show-overflow-tooltip :filters="weavingWorkerNameFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="shiftOutput" label="产量(米)" width="90" :filters="weavingShiftOutputFilterOpts" :filter-method="clientColumnFilter"><template #default="scope"><b style="color: #16a34a;">+ {{ scope.row.shiftOutput }}</b></template></el-table-column>
                             <el-table-column prop="standardCapacity" label="标准产能" width="90"></el-table-column>
                             <el-table-column prop="standardHours" label="标准小时" width="90"></el-table-column>
                             <el-table-column prop="standardHourCapacity" label="小时产能" width="90"></el-table-column>
                             <el-table-column prop="performanceHours" label="绩效工时" width="90"></el-table-column>
-                            <el-table-column prop="dataQualityFlag" label="质量" width="70" align="center"><template #default="scope"><el-tag :type="scope.row.dataQualityFlag === 'A' ? 'success' : (scope.row.dataQualityFlag === 'B' ? 'warning' : 'danger')" size="small">{{ scope.row.dataQualityFlag }}</el-tag></template></el-table-column>
+                            <el-table-column prop="dataQualityFlag" label="质量" width="70" align="center" :filters="weavingDataQualityFilterOpts" :filter-method="clientColumnFilter"><template #default="scope"><el-tag :type="scope.row.dataQualityFlag === 'A' ? 'success' : (scope.row.dataQualityFlag === 'B' ? 'warning' : 'danger')" size="small">{{ scope.row.dataQualityFlag }}</el-tag></template></el-table-column>
                             <el-table-column label="管理" width="110" align="center" fixed="right">
                                 <template #default="scope">
                                     <el-button type="primary" size="small" plain @click="openEditWeaving(scope.row)" style="padding: 4px 8px;">修</el-button>
@@ -375,18 +375,18 @@
                             <el-tag type="info" style="margin-left:auto">共 {{ coexTotal }} 条</el-tag>
                         </div>
                         <el-table :data="paginatedCoexLogs" border stripe size="small" v-loading="loading" @filter-change="handleCoexFilterChange">
-                            <el-table-column prop="logDate" label="账期" width="90"></el-table-column>
+                            <el-table-column prop="logDate" label="账期" width="90" :filters="coexLogDateFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="machineNo" label="机台号" width="70" align="center" :filters="coexMachineFilterOptions"></el-table-column>
-                            <el-table-column prop="productType" label="产品类型" width="90"></el-table-column>
+                            <el-table-column prop="productType" label="产品类型" width="90" :filters="coexProductTypeFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="productModel" label="产品型号" width="110" show-overflow-tooltip :filters="coexModelFilterOptions"></el-table-column>
                             <el-table-column prop="color" label="颜色" width="70" :filters="coexColorFilterOptions"></el-table-column>
-                            <el-table-column prop="mainMaterial" label="主材" width="100" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="mainMaterial" label="主材" width="100" show-overflow-tooltip :filters="coexMainMaterialFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="finishedQty" label="成品数量(根)" width="100" align="center"></el-table-column>
-                            <el-table-column prop="weightKg" label="重量(Kg)" width="90"></el-table-column>
-                            <el-table-column prop="capacityMeters" label="产能(米)"><template #default="scope"><el-tag type="success">{{ scope.row.capacityMeters }}</el-tag></template></el-table-column>
-                            <el-table-column prop="leakageKg" label="漏胶(Kg)" width="90"></el-table-column>
-                            <el-table-column prop="sourceFileYear" label="年份" width="70" align="center"></el-table-column>
-                            <el-table-column prop="dataQualityFlag" label="质量" width="70" align="center"><template #default="scope"><el-tag :type="scope.row.dataQualityFlag === 'A' ? 'success' : (scope.row.dataQualityFlag === 'B' ? 'warning' : 'danger')" size="small">{{ scope.row.dataQualityFlag }}</el-tag></template></el-table-column>
+                            <el-table-column prop="weightKg" label="重量(Kg)" width="90" :filters="coexWeightKgFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="capacityMeters" label="产能(米)" :filters="coexCapacityMetersFilterOpts" :filter-method="clientColumnFilter"><template #default="scope"><el-tag type="success">{{ scope.row.capacityMeters }}</el-tag></template></el-table-column>
+                            <el-table-column prop="leakageKg" label="漏胶(Kg)" width="90" :filters="coexLeakageKgFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="sourceFileYear" label="年份" width="70" align="center" :filters="coexSourceYearFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="dataQualityFlag" label="质量" width="70" align="center" :filters="coexDataQualityFilterOpts" :filter-method="clientColumnFilter"><template #default="scope"><el-tag :type="scope.row.dataQualityFlag === 'A' ? 'success' : (scope.row.dataQualityFlag === 'B' ? 'warning' : 'danger')" size="small">{{ scope.row.dataQualityFlag }}</el-tag></template></el-table-column>
                             <el-table-column label="管理" width="90" align="center" fixed="right">
                                 <template #default="scope">
                                     <el-button type="primary" size="small" plain @click="openEditCoex(scope.row)" style="padding: 5px;">修</el-button>
@@ -507,7 +507,7 @@
                                 </template>
                             </el-table-column>
 
-                            <el-table-column prop="partNumber" label="带坯零件号(总)" width="150">
+                            <el-table-column prop="partNumber" label="带坯零件号(总)" width="150" :filters="invPartNumberFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope"><b>{{ scope.row.partNumber }}</b></template>
                             </el-table-column>
                             <el-table-column prop="stockTypes" label="库存类型" width="130" align="center" :filters="invStockTypeFilterOptions">
@@ -518,7 +518,7 @@
                                     <el-tag type="info" size="small">{{ scope.row.batches.length }} 批</el-tag>
                                 </template>
                             </el-table-column>
-                            <el-table-column prop="modelSpec" label="型号规格" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="modelSpec" label="型号规格" show-overflow-tooltip :filters="invModelSpecFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="totalStockMeters" label="该型号总可用库存(米)">
                                 <template #default="scope">
                                     <el-tag :type="scope.row.totalStockMeters > 2000 ? 'success' : 'warning'" effect="dark">
@@ -526,7 +526,7 @@
                                     </el-tag>
                                 </template>
                             </el-table-column>
-                            <el-table-column prop="snapshotDate" label="最新快照日期" width="120" align="center"></el-table-column>
+                            <el-table-column prop="snapshotDate" label="最新快照日期" width="120" align="center" :filters="invSnapshotDateFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                         </el-table>
 
                         <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
@@ -617,14 +617,14 @@
 
                         <el-table :data="paginatedProcessList" border stripe size="small" style="width: 100%" @filter-change="handleProcessFilterChange">
                             <el-table-column prop="id" label="工艺ID" width="70" align="center" fixed></el-table-column>
-                            <el-table-column prop="finishedPartNumber" label="成品零件号" width="110" fixed></el-table-column>
-                            <el-table-column prop="finishedModelSpec" label="成品规格型号" width="130" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="finishedPartNumber" label="成品零件号" width="110" fixed :filters="procFinishedPnFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="finishedModelSpec" label="成品规格型号" width="130" show-overflow-tooltip :filters="procFinishedSpecFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="materialType" label="材料类型" width="90" :filters="processMaterialFilterOptions"></el-table-column>
                             <el-table-column prop="coexMaxDailyOutput" label="共挤最大日产" width="105" align="right">
                                 <template #default="scope"><el-tag size="small" type="warning" effect="plain">{{ scope.row.coexMaxDailyOutput ?? '-' }}</el-tag></template>
                             </el-table-column>
-                            <el-table-column prop="tapePartNumber" label="带坯零件号" width="110"></el-table-column>
-                            <el-table-column prop="tapeModelSpec" label="带坯规格型号" width="130" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="tapePartNumber" label="带坯零件号" width="110" :filters="procTapePnFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="tapeModelSpec" label="带坯规格型号" width="130" show-overflow-tooltip :filters="procTapeSpecFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="weavingStandardDailyOutput" label="织造标准日产(米/天24h)" width="150" align="right">
                                 <template #default="scope"><el-tag size="small" type="success" effect="plain">{{ scope.row.weavingStandardDailyOutput ?? '-' }}</el-tag></template>
                             </el-table-column>
@@ -710,24 +710,24 @@
                         </div>
 
                         <el-table :data="paginatedMachineArchiveList" border stripe size="small" style="width: 100%" v-loading="loading">
-                            <el-table-column prop="machineId" label="机台号" width="90" align="center" fixed>
+                            <el-table-column prop="machineId" label="机台号" width="90" align="center" fixed :filters="machineIdFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope"><b>{{ scope.row.machineId }}</b></template>
                             </el-table-column>
-                            <el-table-column label="口径下限" width="90" align="center">
+                            <el-table-column prop="caliberMin" label="口径下限" width="90" align="center" :filters="machineCaliberMinFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope">{{ scope.row.caliberMin ?? '-' }}</template>
                             </el-table-column>
-                            <el-table-column label="口径上限" width="90" align="center">
+                            <el-table-column prop="caliberMax" label="口径上限" width="90" align="center" :filters="machineCaliberMaxFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope">{{ scope.row.caliberMax ?? '-' }}</template>
                             </el-table-column>
-                            <el-table-column prop="workshopId" label="所属车间" width="110" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="workshopId" label="所属车间" width="110" show-overflow-tooltip :filters="machineWorkshopFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column prop="warpSpec" label="经线型号" width="110" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="weftSpec" label="纬线型号" width="110" show-overflow-tooltip></el-table-column>
                             <el-table-column prop="bobbinCount" label="筒子数" width="80" align="center"></el-table-column>
-                            <el-table-column prop="machineStatus" label="机台状态" width="90" align="center">
+                            <el-table-column prop="machineStatus" label="机台状态" width="90" align="center" :filters="machineStatusFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope"><el-tag size="small" :type="(scope.row.machineStatus || '').includes('产') ? 'success' : ((scope.row.machineStatus || '').includes('停') ? 'danger' : ((scope.row.machineStatus || '').includes('修') ? 'warning' : 'info'))">{{ scope.row.machineStatus || '空闲' }}</el-tag></template>
                             </el-table-column>
                             <el-table-column prop="adjacentMachine" label="相邻机台" width="100" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="operatorName" label="操作工" width="90" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="operatorName" label="操作工" width="90" show-overflow-tooltip :filters="machineOperatorFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column label="操作" width="120" align="center" fixed="right">
                                 <template #default="scope">
                                     <el-button type="primary" size="small" plain @click="openEditMachineArchive(scope.row)">修</el-button>
@@ -807,17 +807,17 @@
                         </div>
 
                         <el-table :data="paginatedLineArchiveList" border stripe size="small" style="width: 100%" v-loading="loading">
-                            <el-table-column prop="lineId" label="产线号" width="100" align="center" fixed>
+                            <el-table-column prop="lineId" label="产线号" width="100" align="center" fixed :filters="lineIdFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope"><b>{{ scope.row.lineId }}</b></template>
                             </el-table-column>
-                            <el-table-column label="口径下限" width="100" align="center">
+                            <el-table-column prop="caliberMin" label="口径下限" width="100" align="center" :filters="lineCaliberMinFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope">{{ scope.row.caliberMin ?? '-' }}</template>
                             </el-table-column>
-                            <el-table-column label="口径上限" width="100" align="center">
+                            <el-table-column prop="caliberMax" label="口径上限" width="100" align="center" :filters="lineCaliberMaxFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope">{{ scope.row.caliberMax ?? '-' }}</template>
                             </el-table-column>
-                            <el-table-column prop="workshopId" label="所属车间" width="140" show-overflow-tooltip></el-table-column>
-                            <el-table-column prop="lineStatus" label="产线状态" width="110" align="center">
+                            <el-table-column prop="workshopId" label="所属车间" width="140" show-overflow-tooltip :filters="lineWorkshopFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="lineStatus" label="产线状态" width="110" align="center" :filters="lineStatusFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope"><el-tag size="small" :type="(scope.row.lineStatus || '').includes('产') ? 'success' : ((scope.row.lineStatus || '').includes('停') ? 'danger' : ((scope.row.lineStatus || '').includes('修') ? 'warning' : 'info'))">{{ scope.row.lineStatus || '空闲' }}</el-tag></template>
                             </el-table-column>
                             <el-table-column label="操作" width="120" align="center" fixed="right">
@@ -932,16 +932,16 @@
                                     </el-table>
                                 </template>
                             </el-table-column>
-                            <el-table-column prop="orderId" label="订单统编号">
+                            <el-table-column prop="orderId" label="订单统编号" :filters="orderIdFilterOpts" :filter-method="clientColumnFilter">
                                 <template #default="scope"><b>{{ scope.row.orderId }}</b></template>
                             </el-table-column>
                             <el-table-column prop="partNumbers" label="成品零件号" width="170" :filters="orderPartFilterOptions">
                                 <template #default="scope"><span style="font-size: 12px;">{{ (scope.row.items || []).map(i => i.finishedPartNumber).filter(Boolean).join('、') || '-' }}</span></template>
                             </el-table-column>
-                            <el-table-column prop="customerName" label="客户名称"></el-table-column>
-                            <el-table-column prop="salesperson" label="销售员"></el-table-column>
-                            <el-table-column prop="orderDate" label="接单日期"></el-table-column>
-                            <el-table-column prop="deliveryDate" label="合同约定交期"></el-table-column>
+                            <el-table-column prop="customerName" label="客户名称" :filters="orderCustomerFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="salesperson" label="销售员" :filters="orderSalespersonFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="orderDate" label="接单日期" :filters="orderOrderDateFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
+                            <el-table-column prop="deliveryDate" label="合同约定交期" :filters="orderDeliveryDateFilterOpts" :filter-method="clientColumnFilter"></el-table-column>
                             <el-table-column label="排产状态" width="110" align="center">
                                 <template #default="scope">
                                     <el-tag v-if="scope.row.scheduleStatus === '已排产'" type="success" size="small">已排产</el-tag>
@@ -986,7 +986,6 @@
                         <el-form :inline="true" :model="estForm">
                             <el-form-item label="加载销售订单号"><el-input v-model="estForm.orderId" placeholder="输入订单统编号..."></el-input></el-form-item>
                             <el-form-item label="交期全局缓冲(天)"><el-input-number v-model="estForm.globalBufferDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
-                            <el-form-item label="织造提前结束(天)"><el-input-number v-model="estForm.weavingAdvanceDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
                             <el-form-item label="织造储备(天)">
                                 <el-tooltip placement="top" effect="dark" content="共挤开工前需提前储备的带坯天数：储备米数 = 共挤最大日产 × 天数，织造相应提前 ceil(储备米数 ÷ 织造日产) 天开工。0 为不储备（与现状排产一致）">
                                     <el-input-number v-model="estForm.weavingReserveDays" :min="0" style="width: 130px;"></el-input-number>
@@ -1168,7 +1167,6 @@
                                 <el-form-item label="客户名称"><el-input v-model="inquiryForm.customerName" placeholder="可选"></el-input></el-form-item>
                                 <el-form-item label="拟生产天数"><el-input-number v-model="inquiryForm.plannedProductionDays" :min="1" :max="365" style="width: 140px;"></el-input-number></el-form-item>
                                 <el-form-item label="缓冲天数"><el-input-number v-model="inquiryForm.globalBufferDays" :min="0" style="width: 120px;"></el-input-number></el-form-item>
-                                <el-form-item label="织造提前(天)"><el-input-number v-model="inquiryForm.weavingAdvanceDays" :min="0" style="width: 120px;"></el-input-number></el-form-item>
                                 <el-form-item label="织造储备(天)">
                                     <el-tooltip placement="top" effect="dark" content="共挤开工前需提前储备的带坯天数：储备米数 = 共挤最大日产 × 天数，织造相应提前开工。0 为不储备（与现状一致）">
                                         <el-input-number v-model="inquiryForm.weavingReserveDays" :min="0" style="width: 120px;"></el-input-number>

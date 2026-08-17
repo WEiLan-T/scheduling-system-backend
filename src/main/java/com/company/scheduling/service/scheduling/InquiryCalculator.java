@@ -46,7 +46,7 @@ public class InquiryCalculator {
         }
         int plannedDays = request.getPlannedProductionDays() != null ? request.getPlannedProductionDays() : 30;
         int bufferDays = request.getGlobalBufferDays() != null ? request.getGlobalBufferDays() : 3;
-        int weaveAdvance = request.getWeavingAdvanceDays() != null ? request.getWeavingAdvanceDays() : 2;
+        // 算法简化：已取消 weavingAdvanceDays，共挤开始时间直接对齐织造结束时间
 
         // 建立 override 索引
         Map<String, InquiryRequest.ItemResourceOverride> overrideMap = new HashMap<>();
@@ -183,12 +183,17 @@ public class InquiryCalculator {
             BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
             LocalDateTime weavingStartRef = now.minusDays(reserveAdvanceDays);
             LocalDateTime weavingEndRef = now.plusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
-            // 共挤开始 = 织造结束 - weaveAdvance 天；如果共挤开始早于织造开始，则共挤开始=织造开始
-            LocalDateTime coexStartRef = weavingEndRef.minusDays(weaveAdvance);
+            // 共挤开机 = 织造开工 + 储备提前天数（储备就绪即开机）
+            LocalDateTime coexStartRef = weavingStartRef.plusDays(reserveAdvanceDays);
+            // 下界保护：不早于织造开工
             if (coexStartRef.isBefore(weavingStartRef)) {
                 coexStartRef = weavingStartRef;
             }
             LocalDateTime coexEndRef = coexStartRef.plusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
+            // 安全保障：共挤停机不早于织造停机（共挤连续不停机）
+            if (coexEndRef.isBefore(weavingEndRef)) {
+                coexEndRef = weavingEndRef;
+            }
 
             BigDecimal changeoverDays = new BigDecimal("1");
             Integer delayDays = 1;
