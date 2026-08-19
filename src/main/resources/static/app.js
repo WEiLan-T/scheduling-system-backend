@@ -1061,6 +1061,34 @@ const app = createApp({
             return estResult.value.details.filter(d => d.allocationType === 'coex');
         });
 
+        // 🌟 物料消耗汇总：经/纬线用量取自织造行（按缺口米数），用胶量取自共挤行（按成品米数），避免织造/共挤行重复计数
+        const buildMaterialSummary = (details) => {
+            if (!details || !details.length) return null;
+            const weavingRows = details.filter(d => d.allocationType === 'weaving');
+            const coexRows = details.filter(d => d.allocationType === 'coex');
+            const sum = (rows, key) => rows.reduce((acc, r) => acc + (Number(r[key]) || 0), 0);
+            const warpTotalKg = sum(weavingRows, 'warpTotalWeightKg');
+            const weft3000DTotalKg = sum(weavingRows, 'weft3000DTotalWeightKg');
+            const weft2000DTotalKg = sum(weavingRows, 'weft2000DTotalWeightKg');
+            const glueTotalKg = sum(coexRows, 'glueTotalKg');
+            const warpSpec = weavingRows.find(r => r.warpSpec)?.warpSpec || null;
+            const weftSpec3000D = weavingRows.find(r => r.weftSpec3000D)?.weftSpec3000D || null;
+            const weftSpec2000D = weavingRows.find(r => r.weftSpec2000D)?.weftSpec2000D || null;
+            const materialType = coexRows.find(r => r.materialType)?.materialType || null;
+            const hasData = warpTotalKg > 0 || weft3000DTotalKg > 0 || weft2000DTotalKg > 0 || glueTotalKg > 0;
+            return { warpTotalKg, weft3000DTotalKg, weft2000DTotalKg, glueTotalKg, warpSpec, weftSpec3000D, weftSpec2000D, materialType, hasData };
+        };
+
+        const estMaterialSummary = computed(() => {
+            if (!estResult.value || !estResult.value.details) return null;
+            return buildMaterialSummary(estResult.value.details);
+        });
+
+        const inquiryMaterialSummary = computed(() => {
+            if (!inquiryResult.value || !inquiryResult.value.details) return null;
+            return buildMaterialSummary(inquiryResult.value.details);
+        });
+
         // 口径候选过滤 helper：按行 candidateMachineIds/candidateLineIds 过滤下拉选项；后端未返回时回退全量列表
         const rowCandidateMachines = (row) => {
             if (!row.candidateMachineIds || !row.candidateMachineIds.length) return machineList.value;
@@ -1471,6 +1499,22 @@ const app = createApp({
         // ==========================================
         // 📊 核心仪表盘：织造 & 共挤产线卡片
         // ==========================================
+
+        // 车间颜色映射：为每个 distinct workshopId 分配唯一颜色
+        const workshopColorMap = computed(() => {
+            const colors = ['#0284c7', '#ca8a04', '#059669', '#dc2626', '#7c3aed', '#db2777'];
+            const map = new Map();
+            let idx = 0;
+            [...machineList.value, ...lineList.value].forEach(item => {
+                const ws = item.workshopId;
+                if (ws && !map.has(ws)) {
+                    map.set(ws, colors[idx % colors.length]);
+                    idx++;
+                }
+            });
+            return map;
+        });
+
         const factoryMachines = computed(() => {
             return machineList.value.map(m => {
                 const logs = weavingLogsByMachine.value[cleanId(m.machineId)] || [];
@@ -1497,7 +1541,8 @@ const app = createApp({
                     accum: accum,
                     total: total,
                     operator: realStatus === '在产' ? (latest.operatorName || m.operatorName || '未知') : '未知',
-                    statusClass: getStatusClass(realStatus)
+                    statusClass: getStatusClass(realStatus),
+                    workshopColor: workshopColorMap.value.get(m.workshopId) || '#94a3b8'
                 };
             });
         });
@@ -1532,7 +1577,8 @@ const app = createApp({
                     accum: accum,
                     total: total,
                     currentSpeed: realStatus === '在产' ? (latest.productionSpeed || 0) : 0,
-                    statusClass: getStatusClass(realStatus)
+                    statusClass: getStatusClass(realStatus),
+                    workshopColor: workshopColorMap.value.get(l.workshopId) || '#94a3b8'
                 };
             }).sort((a, b) => parseInt(cleanId(a.lineId)) - parseInt(cleanId(b.lineId)));
         });
@@ -1563,6 +1609,7 @@ const app = createApp({
 
                     rows.push({
                         id: 'W_' + m.machineId, label: `织造 ${m.machineId}#`, type: 'weaving',
+                        workshopId: m.workshopId, workshopColor: workshopColorMap.value.get(m.workshopId) || '#94a3b8',
                         task: {
                             partNumber: tapePn,
                             orderId: progress.orderId,
@@ -1575,7 +1622,7 @@ const app = createApp({
                         }
                     });
                 } else {
-                    rows.push({ id: 'W_' + m.machineId, label: `织造 ${m.machineId}#`, type: 'weaving', task: null });
+                    rows.push({ id: 'W_' + m.machineId, label: `织造 ${m.machineId}#`, type: 'weaving', workshopId: m.workshopId, workshopColor: workshopColorMap.value.get(m.workshopId) || '#94a3b8', task: null });
                 }
             });
 
@@ -1597,10 +1644,11 @@ const app = createApp({
 
                     rows.push({
                         id: 'C_' + l.lineId, label: `共挤 ${l.lineId}#`, type: 'coex',
+                        workshopId: l.workshopId, workshopColor: workshopColorMap.value.get(l.workshopId) || '#94a3b8',
                         task: { partNumber: finishedPn, orderId, accum: progress.accum, total: progress.total, start: now - pastMs, end: now + futureMs, capPerDay }
                     });
                 } else {
-                    rows.push({ id: 'C_' + l.lineId, label: `共挤 ${l.lineId}#`, type: 'coex', task: null });
+                    rows.push({ id: 'C_' + l.lineId, label: `共挤 ${l.lineId}#`, type: 'coex', workshopId: l.workshopId, workshopColor: workshopColorMap.value.get(l.workshopId) || '#94a3b8', task: null });
                 }
             });
             return rows;
@@ -2081,8 +2129,8 @@ const app = createApp({
             importResult, lastImportSource, importLoading, inventorySnapshotDate, inventoryFile, handleInventoryFileChange, importInventory, exportInventory, reconciliationData, reconciliationLoading, loadReconciliationReport, confirmReconciliation,
             orderHeader, orderItems, isOrderEditMode, orderList, calcTotal, addOrderItem, removeOrderItem, submitOrder, resetOrderForm, editOrder, deleteOrder, orderKeyword, orderPage, orderPageSize, paginatedOrderList, orderTotal, orderPartFilterOptions, searchOrders, handleOrderFilterChange, onOrderSizeChange, onOrderPageChange,
             orderIdFilterOpts, orderCustomerFilterOpts, orderSalespersonFilterOpts, orderOrderDateFilterOpts, orderDeliveryDateFilterOpts,
-            estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity, capacityFieldLabel, weavingScheduleDetails, coexScheduleDetails, rowCandidateMachines, rowCandidateLines,
-            inquiryForm, inquiryResult, addInquiryItem, removeInquiryItem, fetchInquiry, inquiryGanttTimeline, inquiryGanttRows,
+            estForm, estResult, fetchInitialDraft, commitFinalScheduleToDb, ganttRows, ganttTimeline, capacityDialogVisible, capacityPrompt, manualCap, submitManualCapacity, capacityFieldLabel, weavingScheduleDetails, coexScheduleDetails, rowCandidateMachines, rowCandidateLines, estMaterialSummary,
+            inquiryForm, inquiryResult, addInquiryItem, removeInquiryItem, fetchInquiry, inquiryGanttTimeline, inquiryGanttRows, inquiryMaterialSummary,
             inquiryResCounts, debouncedInquiryRecalc, onInquiryAssignChange,
             processList, processDialogVisible, processForm, openAddProcess, openEditProcess, saveProcess, deleteProcess, loadProcesses, processFileRef, exportProcessExcel, handleProcessImport, processKeyword, processPage, processPageSize, paginatedProcessList, processTotal, processMaterialFilterOptions, loadProcessPage, searchProcess, handleProcessFilterChange, onProcessSizeChange, onProcessPageChange,
             procFinishedPnFilterOpts, procTapePnFilterOpts, procFinishedSpecFilterOpts, procTapeSpecFilterOpts,
@@ -2091,7 +2139,7 @@ const app = createApp({
             machineIdFilterOpts, machineCaliberMinFilterOpts, machineCaliberMaxFilterOpts, machineWorkshopFilterOpts, machineStatusFilterOpts, machineOperatorFilterOpts,
             lineArchiveKeyword, lineArchivePage, lineArchivePageSize, lineArchiveTotal, paginatedLineArchiveList, lineDialogVisible, lineArchiveEditMode, lineForm, lineFileRef, searchLineArchive, openAddLineArchive, openEditLineArchive, saveLineArchive, deleteLineArchive, handleLineArchiveImport, exportLineArchiveExcel,
             lineIdFilterOpts, lineCaliberMinFilterOpts, lineCaliberMaxFilterOpts, lineWorkshopFilterOpts, lineStatusFilterOpts,
-            allWeavingMachines, factoryLines,
+            allWeavingMachines, factoryLines, workshopColorMap,
             executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos, dashboardViewDays,
             orderFileRef, exportOrderExcel, handleOrderImport, orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX,
             multiOrderMode, selectedOrderIds, fetchMultiOrderSchedule, multiOrderResult,

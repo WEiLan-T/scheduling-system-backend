@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: business_services
+title: 业务服务聚合层（AuthService/OrderService/DataEntryService/EstimationService）
+scope:
+    - src/main/java/com/company/scheduling/service/AuthService.java
+    - src/main/java/com/company/scheduling/service/OrderService.java
+    - src/main/java/com/company/scheduling/service/DataEntryService.java
+    - src/main/java/com/company/scheduling/service/EstimationService.java
+source_files: []
+depends_on: []
+related_to: []

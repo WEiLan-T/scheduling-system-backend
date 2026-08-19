@@ -187,11 +187,17 @@ public class SchedulingEngine {
                     weavingMachineIds.add(wm.getMachineId());
                 }
 
-                BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+                // 每台机台需生产的总米数 = 缺口均分 + 储备均分
+                BigDecimal splitReserveMeters = machineCount > 0
+                    ? reserveMeters.divide(new BigDecimal(machineCount), 4, RoundingMode.HALF_UP)
+                    : reserveMeters;
+                BigDecimal totalWeavePerMachine = splitShortfall.add(splitReserveMeters);
+                // 织造生产时长基于总米数（含储备）
+                BigDecimal splitWHours = totalWeavePerMachine.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
                 // 算法简化：织造结束时间直接对齐 deadline（已取消 weavingAdvanceDays）
                 LocalDateTime weavingEnd = deadline;
-                // 储备偏移：织造起点相对共挤再提前 reserveAdvanceDays 天（缺省 0 天时无偏移）
-                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue()).minusDays(reserveAdvanceDays);
+                // 储备生产时间已包含在 splitWHours 中，不再额外偏移织造起点
+                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
 
                 if (weavingStart.isBefore(now)) {
                     long shiftMinutes = ChronoUnit.MINUTES.between(weavingStart, now);
@@ -208,7 +214,7 @@ public class SchedulingEngine {
                 cDates.algoCoexCapacity = cCap;
                 cDates.algoDelayDays = delayDays;
 
-                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, req.getOrderId(), Collections.emptyList(), null, reserveMeters, reserveAdvanceDays);
+                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, req.getOrderId(), Collections.emptyList(), null, reserveMeters, reserveAdvanceDays, proc);
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
@@ -266,7 +272,7 @@ public class SchedulingEngine {
                 cDates.algoDelayDays = delayDays;
 
                 Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, req.getOrderId(),
-                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null, reserveMeters, reserveAdvanceDays);
+                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null, reserveMeters, reserveAdvanceDays, proc);
                 draftItem.put("plannedMachine", null);
                 draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
                 draftItem.put("allocationType", "coex");
@@ -478,11 +484,17 @@ public class SchedulingEngine {
 
                 LocalDateTime machineAvailableTime = wm != null ? timeline.getMachineAvailableTime(wm.getMachineId(), now) : now;
 
-                BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+                // 每台机台需生产的总米数 = 缺口均分 + 储备均分
+                BigDecimal splitReserveMeters = machineCount > 0
+                    ? reserveMeters.divide(new BigDecimal(machineCount), 4, RoundingMode.HALF_UP)
+                    : reserveMeters;
+                BigDecimal totalWeavePerMachine = splitShortfall.add(splitReserveMeters);
+                // 织造生产时长基于总米数（含储备）
+                BigDecimal splitWHours = totalWeavePerMachine.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
                 // 算法简化：织造结束时间直接对齐 deadline（已取消 weavingAdvanceDays）
                 LocalDateTime weavingEnd = deadline;
-                // 储备偏移：织造起点相对共挤再提前 reserveAdvanceDays 天（缺省 0 天时无偏移）
-                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue()).minusDays(reserveAdvanceDays);
+                // 储备生产时间已包含在 splitWHours 中，不再额外偏移织造起点
+                LocalDateTime weavingStart = weavingEnd.minusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
 
                 if (shortfall.compareTo(BigDecimal.ZERO) > 0 && weavingStart.isBefore(machineAvailableTime)) {
                     long shift = ChronoUnit.MINUTES.between(weavingStart, machineAvailableTime);
@@ -509,7 +521,7 @@ public class SchedulingEngine {
                 cDates.algoCoexCapacity = cCap;
                 cDates.algoDelayDays = delayDays;
 
-                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, orderId, Collections.emptyList(), null, reserveMeters, reserveAdvanceDays);
+                Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, orderId, Collections.emptyList(), null, reserveMeters, reserveAdvanceDays, proc);
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
@@ -582,7 +594,7 @@ public class SchedulingEngine {
                 cDates.algoDelayDays = delayDays;
 
                 Map<String, Object> draftItem = buildDraftView(item.getFinishedPartNumber(), tapePartNumber, proc.getWarpSpec(), proc.getWeftSpec(), proc.getFinishedModelSpec(), proc.getTapeModelSpec(), splitFinished, splitShortfall, wDates, cDates, orderId,
-                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null, reserveMeters, reserveAdvanceDays);
+                        rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null, reserveMeters, reserveAdvanceDays, proc);
                 draftItem.put("plannedMachine", null);
                 draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
                 draftItem.put("allocationType", "coex");
@@ -652,7 +664,8 @@ public class SchedulingEngine {
                                                 BigDecimal fMeters, BigDecimal tNeed,
                                                 ScheduleDates w, ScheduleDates c, String orderId,
                                                 List<Map<String, Object>> consumedTapeCodes, BigDecimal surplusMeters,
-                                                BigDecimal reserveMeters, Integer reserveAdvanceDays) {
+                                                BigDecimal reserveMeters, Integer reserveAdvanceDays,
+                                                ProductProcess proc) {
         Map<String, Object> m = new HashMap<>();
         m.put("orderId", orderId);
         m.put("finishedPartNumber", fPn);
@@ -679,6 +692,28 @@ public class SchedulingEngine {
         m.put("surplusMeters", surplusMeters);
         if (surplusMeters != null && surplusMeters.compareTo(BigDecimal.ZERO) > 0) {
             m.put("consumptionRemark", "库存最后一根整根投入超出需求 " + surplusMeters.stripTrailingZeros().toPlainString() + " 米（超额未截断，如实计入该产线投入）");
+        }
+        // 物料消耗字段：经纬线用线量与用胶量
+        if (proc != null) {
+            BigDecimal warpWeight = proc.getWarpWeightPerMeter();
+            m.put("warpTotalWeightKg", warpWeight != null ? warpWeight.multiply(tNeed).divide(new BigDecimal("1000"), 4, RoundingMode.HALF_UP) : null);
+            BigDecimal weft3000DWeight = proc.getWeftWeightPerMeter3000D();
+            m.put("weft3000DTotalWeightKg", weft3000DWeight != null ? weft3000DWeight.multiply(tNeed).divide(new BigDecimal("1000"), 4, RoundingMode.HALF_UP) : null);
+            m.put("weftSpec3000D", proc.getWeftSpec3000D());
+            BigDecimal weft2000DWeight = proc.getWeftWeightPerMeter2000D();
+            m.put("weft2000DTotalWeightKg", weft2000DWeight != null ? weft2000DWeight.multiply(tNeed).divide(new BigDecimal("1000"), 4, RoundingMode.HALF_UP) : null);
+            m.put("weftSpec2000D", proc.getWeftSpec2000D());
+            BigDecimal glueUsage = proc.getGlueUsagePerMeter();
+            m.put("glueTotalKg", glueUsage != null ? glueUsage.multiply(fMeters).setScale(4, RoundingMode.HALF_UP) : null);
+            m.put("materialType", proc.getMaterialType());
+        } else {
+            m.put("warpTotalWeightKg", null);
+            m.put("weft3000DTotalWeightKg", null);
+            m.put("weftSpec3000D", null);
+            m.put("weft2000DTotalWeightKg", null);
+            m.put("weftSpec2000D", null);
+            m.put("glueTotalKg", null);
+            m.put("materialType", null);
         }
         return m;
     }

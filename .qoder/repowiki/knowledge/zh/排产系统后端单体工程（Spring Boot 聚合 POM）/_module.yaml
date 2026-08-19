@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ""
+title: 排产系统后端单体工程（Spring Boot 聚合 POM）
+scope:
+    - pom.xml
+source_files: []
+depends_on: []
+related_to: []

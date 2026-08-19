@@ -96,11 +96,11 @@
                     <el-menu-item-group title="MES 执行控制">
                         <el-menu-item index="weaving"><span>🧶 织造数据录入</span></el-menu-item>
                         <el-menu-item index="coex"><span>🗜️ 共挤数据录入</span></el-menu-item>
-                        <el-menu-item index="inventory"><span>📦 库存调控中心</span></el-menu-item>
+                        <el-menu-item index="inventory"><span>📦 虚拟带坯库存</span></el-menu-item>
                     </el-menu-item-group>
                     <el-menu-item-group title="APS 智能计划">
                         <el-menu-item index="order"><span>🛒 订单统一下达</span></el-menu-item>
-                        <el-menu-item index="process"><span>⚙️ 工艺路线配置</span></el-menu-item>
+                        <el-menu-item index="process"><span>⚙️ BOM库</span></el-menu-item>
                         <el-menu-item index="inquiry"><span>🔮 询单预估</span></el-menu-item>
                         <el-menu-item index="estimation"><span>📊 排产指挥大盘</span></el-menu-item>
                     </el-menu-item-group>
@@ -115,7 +115,7 @@
                 <div v-show="activeMenu === 'dashboard'">
                     <el-card shadow="never" style="border:none; background: transparent;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                            <h2 style="margin: 0; color: #0f172a; font-size: 18px;">🗺️ 厂区数字化双车间全景鸟瞰仪盘表</h2>
+                            <h2 style="margin: 0; color: #0f172a; font-size: 18px;">🗺️ 厂区数字化双车间仪盘表</h2>
                             <div style="display: flex; gap: 15px; align-items: center; background: #fff; padding: 6px 16px; border-radius: 20px; border: 1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
                                 <span style="font-size: 12px; color: #64748b;">状态：</span>
                                 <div style="display: flex; align-items: center; gap: 4px; font-size: 11px;"><div class="legend-dot-item status-producing"></div> 在产</div>
@@ -123,6 +123,8 @@
                                 <div style="display: flex; align-items: center; gap: 4px; font-size: 11px;"><div class="legend-dot-item status-maintenance"></div> 维修</div>
                                 <div style="display: flex; align-items: center; gap: 4px; font-size: 11px;"><div class="legend-dot-item status-stopped"></div> 停机</div>
                                 <div style="display: flex; align-items: center; gap: 4px; font-size: 11px;"><div class="legend-dot-item status-other"></div> 其他</div>
+                                <span style="margin-left: 10px; font-size: 12px; color: #64748b;">车间：</span>
+                                <div v-for="(color, wsId) in Object.fromEntries(workshopColorMap)" :key="wsId" style="display: flex; align-items: center; gap: 4px; font-size: 11px;"><div class="legend-dot-item" :style="{ backgroundColor: color }"></div> {{ wsId }}</div>
                             </div>
                         </div>
 
@@ -142,7 +144,7 @@
                                                 设计限制: {{ caliberLabel(m) || '无' }}
                                             </div>
                                         </template>
-                                        <div class="node-circle-m" :class="m.statusClass">
+                                        <div class="node-circle-m" :class="m.statusClass" :style="{ borderColor: m.workshopColor, borderWidth: '3px', borderStyle: 'solid' }">
                                             <div class="lbl-id">{{ String(m.machineId).replace(/#/g, '') }}#</div>
                                             <div class="lbl-pn">{{ m.currentTape }}</div>
                                             <div class="lbl-cap">{{ (m.accum || 0).toFixed(0) }} / {{ (m.total || 0).toFixed(0) }}</div>
@@ -165,7 +167,7 @@
                                                 瞬时牵引机速: <b>{{ l.currentSpeed }} m/s</b>
                                             </div>
                                         </template>
-                                        <div class="node-rect-l" :class="l.statusClass">
+                                        <div class="node-rect-l" :class="l.statusClass" :style="{ borderColor: l.workshopColor, borderWidth: '3px', borderStyle: 'solid' }">
                                             <div class="lbl-id">{{ String(l.lineId).replace(/[#线]/g, '') }}#线</div>
                                             <div class="lbl-pn">{{ l.currentFinished }}</div>
                                             <div class="lbl-meta-row">
@@ -986,7 +988,7 @@
                         <el-form :inline="true" :model="estForm">
                             <el-form-item label="加载销售订单号"><el-input v-model="estForm.orderId" placeholder="输入订单统编号..."></el-input></el-form-item>
                             <el-form-item label="交期全局缓冲(天)"><el-input-number v-model="estForm.globalBufferDays" :min="0" style="width: 130px;"></el-input-number></el-form-item>
-                            <el-form-item label="织造储备(天)">
+                            <el-form-item label="共挤换带坯预计天数（天）">
                                 <el-tooltip placement="top" effect="dark" content="共挤开工前需提前储备的带坯天数：储备米数 = 共挤最大日产 × 天数，织造相应提前 ceil(储备米数 ÷ 织造日产) 天开工。0 为不储备（与现状排产一致）">
                                     <el-input-number v-model="estForm.weavingReserveDays" :min="0" style="width: 130px;"></el-input-number>
                                 </el-tooltip>
@@ -1014,6 +1016,26 @@
                             <div v-if="estResult.conflictWarnings && estResult.conflictWarnings.length > 0" style="margin-bottom: 15px;">
                                 <el-alert v-for="(warn, wIdx) in estResult.conflictWarnings" :key="wIdx"
                                           :title="'⚠️ ' + warn" type="warning" show-icon :closable="false" style="margin-bottom: 8px;"></el-alert>
+                            </div>
+
+                            <!-- 🌟 物料消耗总览（经/纬线/用胶）：置于甘特图轨道上方，仅显示总消耗 -->
+                            <div v-if="estMaterialSummary && estMaterialSummary.hasData" style="display: flex; flex-wrap: wrap; gap: 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 18px; margin-bottom: 15px; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+                                <span style="font-weight: bold; color: #0f172a; font-size: 14px;">📦 物料消耗总览：</span>
+                                <div v-if="estMaterialSummary.warpTotalKg > 0" style="display:flex; align-items:center; gap:6px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; padding:6px 12px;">
+                                    <span style="font-size:12px; color:#0369a1; font-weight:bold;">经线</span>
+                                    <span v-if="estMaterialSummary.warpSpec" style="font-size:12px; color:#64748b;">{{ estMaterialSummary.warpSpec }}</span>
+                                    <b style="color:#0284c7; font-size:15px;">{{ estMaterialSummary.warpTotalKg.toFixed(2) }} kg</b>
+                                </div>
+                                <div v-if="estMaterialSummary.weft3000DTotalKg > 0 || estMaterialSummary.weft2000DTotalKg > 0" style="display:flex; align-items:center; gap:8px; background:#fefce8; border:1px solid #fde68a; border-radius:6px; padding:6px 12px;">
+                                    <span style="font-size:12px; color:#a16207; font-weight:bold;">纬线</span>
+                                    <span v-if="estMaterialSummary.weft3000DTotalKg > 0" style="font-size:12px;">{{ estMaterialSummary.weftSpec3000D }} <b style="color:#ca8a04;">{{ estMaterialSummary.weft3000DTotalKg.toFixed(2) }} kg</b></span>
+                                    <span v-if="estMaterialSummary.weft2000DTotalKg > 0" style="font-size:12px;">{{ estMaterialSummary.weftSpec2000D }} <b style="color:#ca8a04;">{{ estMaterialSummary.weft2000DTotalKg.toFixed(2) }} kg</b></span>
+                                </div>
+                                <div v-if="estMaterialSummary.glueTotalKg > 0" style="display:flex; align-items:center; gap:6px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:6px 12px;">
+                                    <span style="font-size:12px; color:#15803d; font-weight:bold;">用胶</span>
+                                    <span v-if="estMaterialSummary.materialType" style="font-size:12px; color:#64748b;">{{ estMaterialSummary.materialType }}</span>
+                                    <b style="color:#059669; font-size:15px;">{{ estMaterialSummary.glueTotalKg.toFixed(2) }} kg</b>
+                                </div>
                             </div>
 
                             <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 25px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">
@@ -1167,7 +1189,7 @@
                                 <el-form-item label="客户名称"><el-input v-model="inquiryForm.customerName" placeholder="可选"></el-input></el-form-item>
                                 <el-form-item label="拟生产天数"><el-input-number v-model="inquiryForm.plannedProductionDays" :min="1" :max="365" style="width: 140px;"></el-input-number></el-form-item>
                                 <el-form-item label="缓冲天数"><el-input-number v-model="inquiryForm.globalBufferDays" :min="0" style="width: 120px;"></el-input-number></el-form-item>
-                                <el-form-item label="织造储备(天)">
+                                <el-form-item label="共挤换带坯预计天数（天）">
                                     <el-tooltip placement="top" effect="dark" content="共挤开工前需提前储备的带坯天数：储备米数 = 共挤最大日产 × 天数，织造相应提前开工。0 为不储备（与现状一致）">
                                         <el-input-number v-model="inquiryForm.weavingReserveDays" :min="0" style="width: 120px;"></el-input-number>
                                     </el-tooltip>
@@ -1222,6 +1244,26 @@
                                     </el-table-column>
                                 </el-table>
                             </el-card>
+
+                            <!-- 🌟 物料消耗总览（经/纬线/用胶）：置于甘特图轨道上方，仅显示总消耗 -->
+                            <div v-if="inquiryMaterialSummary && inquiryMaterialSummary.hasData" style="display: flex; flex-wrap: wrap; gap: 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 18px; margin-bottom: 15px; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+                                <span style="font-weight: bold; color: #0f172a; font-size: 14px;">📦 物料消耗总览：</span>
+                                <div v-if="inquiryMaterialSummary.warpTotalKg > 0" style="display:flex; align-items:center; gap:6px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; padding:6px 12px;">
+                                    <span style="font-size:12px; color:#0369a1; font-weight:bold;">经线</span>
+                                    <span v-if="inquiryMaterialSummary.warpSpec" style="font-size:12px; color:#64748b;">{{ inquiryMaterialSummary.warpSpec }}</span>
+                                    <b style="color:#0284c7; font-size:15px;">{{ inquiryMaterialSummary.warpTotalKg.toFixed(2) }} kg</b>
+                                </div>
+                                <div v-if="inquiryMaterialSummary.weft3000DTotalKg > 0 || inquiryMaterialSummary.weft2000DTotalKg > 0" style="display:flex; align-items:center; gap:8px; background:#fefce8; border:1px solid #fde68a; border-radius:6px; padding:6px 12px;">
+                                    <span style="font-size:12px; color:#a16207; font-weight:bold;">纬线</span>
+                                    <span v-if="inquiryMaterialSummary.weft3000DTotalKg > 0" style="font-size:12px;">{{ inquiryMaterialSummary.weftSpec3000D }} <b style="color:#ca8a04;">{{ inquiryMaterialSummary.weft3000DTotalKg.toFixed(2) }} kg</b></span>
+                                    <span v-if="inquiryMaterialSummary.weft2000DTotalKg > 0" style="font-size:12px;">{{ inquiryMaterialSummary.weftSpec2000D }} <b style="color:#ca8a04;">{{ inquiryMaterialSummary.weft2000DTotalKg.toFixed(2) }} kg</b></span>
+                                </div>
+                                <div v-if="inquiryMaterialSummary.glueTotalKg > 0" style="display:flex; align-items:center; gap:6px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:6px 12px;">
+                                    <span style="font-size:12px; color:#15803d; font-weight:bold;">用胶</span>
+                                    <span v-if="inquiryMaterialSummary.materialType" style="font-size:12px; color:#64748b;">{{ inquiryMaterialSummary.materialType }}</span>
+                                    <b style="color:#059669; font-size:15px;">{{ inquiryMaterialSummary.glueTotalKg.toFixed(2) }} kg</b>
+                                </div>
+                            </div>
 
                             <!-- 甘特图 -->
                             <div style="overflow-x: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 25px;">
@@ -1364,7 +1406,7 @@
                                 </div>
                             </div>
                             <div v-for="row in dashboardRowsWithPlanOverlay" :key="row.id" style="display: flex; align-items: center; border-bottom: 1px dashed #f1f5f9; height: 42px;">
-                                <div style="width: 150px; flex-shrink: 0; font-weight: bold; font-size: 12px; color: #475569; border-right: 3px solid #e2e8f0; padding-right: 10px; box-sizing: border-box;">
+                                <div style="width: 150px; flex-shrink: 0; font-weight: bold; font-size: 12px; color: #475569; padding-right: 10px; box-sizing: border-box;" :style="{ borderRight: '3px solid ' + (row.workshopColor || '#e2e8f0') }">
                                     {{ row.label }}
                                     <!-- 🌟 针对视窗外的数据，单独渲染 Tag 进行告知，避免留白引起误会 -->
                                     <el-tag v-if="!row.task" size="small" type="info" style="margin-left: 5px;">空闲</el-tag>

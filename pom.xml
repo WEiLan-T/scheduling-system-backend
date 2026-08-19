@@ -9,7 +9,7 @@
 
     <groupId>com.company</groupId>
     <artifactId>scheduling-system-backend</artifactId>
-    <version>0.0.2beta</version>
+    <version>0.0.4beta</version>
     <name>scheduling-system-backend</name>
 
     <properties>

@@ -177,18 +177,19 @@ public class InquiryCalculator {
                 candidateCLines.stream().filter(l -> l.getLineId().equals(lid)).findFirst().ifPresent(selectedCLines::add);
             }
 
-            // 8. 正排时间推导（同一成品各行共享同一基准时点，与原逐行常量计算等价）；
-            // 储备偏移：织造起点提前 reserveAdvanceDays 天开工（缺省 0 天时无偏移），计入 overallStartDate
-            BigDecimal splitWHours = splitShortfall.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
+            // 8. 正排时间推导（同一成品各行共享同一基准时点）；
+            // 织造总米数含储备：totalWeavePerMachine = splitShortfall + splitReserveMeters
+            BigDecimal splitReserveMeters = machineCount > 0
+                ? reserveMeters.divide(new BigDecimal(machineCount), 4, RoundingMode.HALF_UP)
+                : reserveMeters;
+            BigDecimal totalWeavePerMachine = splitShortfall.add(splitReserveMeters);
+            BigDecimal splitWHours = totalWeavePerMachine.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
             BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
-            LocalDateTime weavingStartRef = now.minusDays(reserveAdvanceDays);
+            // 正向排产：从现在起算，储备生产时间已包含在 splitWHours 中
+            LocalDateTime weavingStartRef = now;
             LocalDateTime weavingEndRef = now.plusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
-            // 共挤开机 = 织造开工 + 储备提前天数（储备就绪即开机）
-            LocalDateTime coexStartRef = weavingStartRef.plusDays(reserveAdvanceDays);
-            // 下界保护：不早于织造开工
-            if (coexStartRef.isBefore(weavingStartRef)) {
-                coexStartRef = weavingStartRef;
-            }
+            // 共挤开机 = 织造开工 + 储备提前天数（储备就绪即开机，不变）
+            LocalDateTime coexStartRef = now.plusDays(reserveAdvanceDays);
             LocalDateTime coexEndRef = coexStartRef.plusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
             // 安全保障：共挤停机不早于织造停机（共挤连续不停机）
             if (coexEndRef.isBefore(weavingEndRef)) {
@@ -229,7 +230,7 @@ public class InquiryCalculator {
                         proc.getFinishedModelSpec(), proc.getTapeModelSpec(),
                         splitFinished, splitShortfall, wDates, cDates,
                         Collections.emptyList(), null,
-                        reserveMeters, reserveAdvanceDays);
+                        reserveMeters, reserveAdvanceDays, proc);
                 draftItem.put("plannedMachine", wm != null ? wm.getMachineId() : null);
                 draftItem.put("plannedLine", null);
                 draftItem.put("allocationType", "weaving");
@@ -268,7 +269,7 @@ public class InquiryCalculator {
                         proc.getFinishedModelSpec(), proc.getTapeModelSpec(),
                         splitFinished, splitShortfall, wDates, cDates,
                         rollDistribution.byLine.get(i), i == rollDistribution.lastRollLineIndex ? stock.getSurplusMeters() : null,
-                        reserveMeters, reserveAdvanceDays);
+                        reserveMeters, reserveAdvanceDays, proc);
                 draftItem.put("plannedMachine", null);
                 draftItem.put("plannedLine", cl != null ? cl.getLineId() : null);
                 draftItem.put("allocationType", "coex");
@@ -352,7 +353,8 @@ public class InquiryCalculator {
                                                 BigDecimal fMeters, BigDecimal tNeed,
                                                 ScheduleDates w, ScheduleDates c,
                                                 List<Map<String, Object>> consumedTapeCodes, BigDecimal surplusMeters,
-                                                BigDecimal reserveMeters, Integer reserveAdvanceDays) {
+                                                BigDecimal reserveMeters, Integer reserveAdvanceDays,
+                                                ProductProcess proc) {
         Map<String, Object> m = new HashMap<>();
         m.put("orderId", "询单预估");
         m.put("finishedPartNumber", fPn);
@@ -379,6 +381,28 @@ public class InquiryCalculator {
         m.put("surplusMeters", surplusMeters);
         if (surplusMeters != null && surplusMeters.compareTo(BigDecimal.ZERO) > 0) {
             m.put("consumptionRemark", "库存最后一根整根投入超出需求 " + surplusMeters.stripTrailingZeros().toPlainString() + " 米（超额未截断，如实计入投入）");
+        }
+        // 物料消耗字段：经纬线用线量与用胶量
+        if (proc != null) {
+            BigDecimal warpWeight = proc.getWarpWeightPerMeter();
+            m.put("warpTotalWeightKg", warpWeight != null ? warpWeight.multiply(tNeed).divide(new BigDecimal("1000"), 4, RoundingMode.HALF_UP) : null);
+            BigDecimal weft3000DWeight = proc.getWeftWeightPerMeter3000D();
+            m.put("weft3000DTotalWeightKg", weft3000DWeight != null ? weft3000DWeight.multiply(tNeed).divide(new BigDecimal("1000"), 4, RoundingMode.HALF_UP) : null);
+            m.put("weftSpec3000D", proc.getWeftSpec3000D());
+            BigDecimal weft2000DWeight = proc.getWeftWeightPerMeter2000D();
+            m.put("weft2000DTotalWeightKg", weft2000DWeight != null ? weft2000DWeight.multiply(tNeed).divide(new BigDecimal("1000"), 4, RoundingMode.HALF_UP) : null);
+            m.put("weftSpec2000D", proc.getWeftSpec2000D());
+            BigDecimal glueUsage = proc.getGlueUsagePerMeter();
+            m.put("glueTotalKg", glueUsage != null ? glueUsage.multiply(fMeters).setScale(4, RoundingMode.HALF_UP) : null);
+            m.put("materialType", proc.getMaterialType());
+        } else {
+            m.put("warpTotalWeightKg", null);
+            m.put("weft3000DTotalWeightKg", null);
+            m.put("weftSpec3000D", null);
+            m.put("weft2000DTotalWeightKg", null);
+            m.put("weftSpec2000D", null);
+            m.put("glueTotalKg", null);
+            m.put("materialType", null);
         }
         return m;
     }
