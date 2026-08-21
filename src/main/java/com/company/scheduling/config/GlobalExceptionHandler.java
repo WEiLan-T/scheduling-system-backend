@@ -88,6 +88,18 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 空指针异常专项处理：排产引擎中空值问题定位
+     */
+    @ExceptionHandler(NullPointerException.class)
+    public ResponseEntity<Map<String, Object>> handleNullPointerException(NullPointerException ex) {
+        log.error("空指针异常（可能为排产引擎数据不完整）", ex);
+        Map<String, Object> body = new HashMap<>();
+        body.put("status", 500);
+        body.put("message", "数据完整性异常：排产引擎检测到空值，请检查工艺库和产能数据是否完整。详情：" + ex.getMessage());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+    
+    /**
      * 兜底：所有未预见的异常
      */
     @ExceptionHandler(Exception.class)

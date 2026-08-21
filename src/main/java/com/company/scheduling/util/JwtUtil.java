@@ -3,6 +3,10 @@ package com.company.scheduling.util;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
@@ -12,11 +16,22 @@ import java.util.Date;
 @Component
 public class JwtUtil {
 
-    // 签名密钥：必须足够长（至少32个字符）。
-    private static final String SECRET_STRING = "ThisIsASuperSecretKeyForSchedulingSystem2026";
+    private static final Logger log = LoggerFactory.getLogger(JwtUtil.class);
 
-    // 使用 Keys 工具将字符串转换为 HMAC-SHA 算法所需的标准密钥对象
-    private final SecretKey key = Keys.hmacShaKeyFor(SECRET_STRING.getBytes(StandardCharsets.UTF_8));
+    // 签名密钥：从配置外部化读取（生产环境请通过环境变量 JWT_SECRET 覆盖，至少32字节）
+    @Value("${jwt.secret:ThisIsASuperSecretKeyForSchedulingSystem2026}")
+    private String secretString;
+
+    private SecretKey key;
+
+    @PostConstruct
+    public void initKey() {
+        byte[] bytes = secretString.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length < 32) {
+            throw new IllegalStateException("JWT 密钥(jwt.secret)长度必须至少32字节，当前仅 " + bytes.length + " 字节");
+        }
+        this.key = Keys.hmacShaKeyFor(bytes);
+    }
 
     // Token 有效期设置 (例如：8小时)
     private static final long EXPIRATION_TIME = 1000 * 60 * 60 * 8;
@@ -47,7 +62,7 @@ public class JwtUtil {
             return true;
         } catch (JwtException | IllegalArgumentException e) {
             // 签名被篡改、Token 过期或格式错误，都会走到这里
-            System.out.println("无效的 JWT Token: " + e.getMessage());
+            log.debug("无效的 JWT Token: {}", e.getMessage());
             return false;
         }
     }

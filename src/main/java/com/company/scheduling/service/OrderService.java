@@ -191,8 +191,15 @@ public class OrderService {
         return "🛒 销售订单 Excel 解析完毕！导入 " + successCount + " 条明细，自动剔除重复或无效行 " + skipCount + " 条。";
     }
 
-    public byte[] exportOrdersToExcel() throws Exception {
-        List<ProductionOrder> orders = orderRepo.findAllByOrderByCreatedAtDesc();
+    /**
+     * 导出销售订单为Excel
+     *
+     * @param year 导出年份（4位，按订单下达时间 orderDate 筛选）；null 表示导出全部（兼容旧行为）
+     */
+    public byte[] exportOrdersToExcel(Integer year) throws Exception {
+        List<ProductionOrder> orders = year != null
+                ? orderRepo.findByOrderDateBetween(LocalDate.of(year, 1, 1), LocalDate.of(year, 12, 31))
+                : orderRepo.findAllByOrderByCreatedAtDesc();
         try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("销售订单明细");
             Row headerRow = sheet.createRow(0);

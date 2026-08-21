@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import java.time.LocalDate;
 import java.util.List;
 
 @Repository
@@ -20,6 +21,9 @@ public interface ProductionOrderRepo extends JpaRepository<ProductionOrder, Inte
 
     // 🌟 新增：批量查询订单
     List<ProductionOrder> findByOrderIdIn(List<String> orderIds);
+
+    /** 按订单下达日期区间查询（供按年导出Excel，避免全量导出自增数据超载） */
+    List<ProductionOrder> findByOrderDateBetween(LocalDate start, LocalDate end);
 
     /**
      * 分页/搜索/筛选查询（供 list 端点可选分页使用）。

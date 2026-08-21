@@ -155,7 +155,9 @@ public class DataEntryService {
     public String deleteWeavingLog(Long id, String currentUser) {
         WeavingDailyLog log = weavingLogRepo.findById(id).orElseThrow(() -> new RuntimeException("台账不存在"));
         if (log.getShiftOutput() != null && log.getShiftOutput().compareTo(BigDecimal.ZERO) > 0) {
-            updateVirtualWarehouse(log.getPartNumber(), log.getTapeCode(), log.getShiftOutput().negate(), LocalDate.now(), currentUser);
+            // 冲减必须落回台账原账期日快照（而非当天），否则跨天删除会导致两个快照库存失真
+            LocalDate originDate = log.getEntryDate() != null ? log.getEntryDate() : LocalDate.now();
+            updateVirtualWarehouse(log.getPartNumber(), log.getTapeCode(), log.getShiftOutput().negate(), originDate, currentUser);
         }
         weavingLogRepo.deleteById(id);
         return "🗑️ 织造台账已被物理废弃，带坯库存已扣减还原！";
@@ -245,12 +247,12 @@ public class DataEntryService {
     }
 
     /**
-     * @deprecated 已迁移至 {@link DataExportService#exportWeavingToExcel()}，
-     * 此方法仅为兼容旧Controller保留的委托包装
+     * @deprecated 已迁移至 {@link DataExportService#exportWeavingToExcel(Integer)}，
+     * 此方法仅为兼容旧Controller保留的委托包装（默认导出全部年份）
      */
     @Deprecated
     public byte[] exportWeavingToExcel() throws Exception {
-        return dataExportService.exportWeavingToExcel();
+        return dataExportService.exportWeavingToExcel(null);
     }
 
     // =========================================================================
@@ -267,12 +269,12 @@ public class DataEntryService {
     }
 
     /**
-     * @deprecated 已迁移至 {@link DataExportService#exportCoexToExcel()}，
-     * 此方法仅为兼容旧Controller保留的委托包装
+     * @deprecated 已迁移至 {@link DataExportService#exportCoexToExcel(Integer)}，
+     * 此方法仅为兼容旧Controller保留的委托包装（默认导出全部年份）
      */
     @Deprecated
     public byte[] exportCoexToExcel() throws Exception {
-        return dataExportService.exportCoexToExcel();
+        return dataExportService.exportCoexToExcel(null);
     }
 
     // =========================================================================

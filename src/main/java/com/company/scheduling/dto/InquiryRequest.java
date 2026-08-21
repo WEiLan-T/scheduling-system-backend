@@ -12,8 +12,6 @@ public class InquiryRequest {
     private Integer plannedProductionDays;
     // 全局参数
     private Integer globalBufferDays = 3;
-    @Deprecated  // 已废弃：共挤开始时间已对齐织造结束时间，不再提前
-    private Integer weavingAdvanceDays = 0;
     // 织造储备库存天数（null/0 = 不储备，与现状完全一致）
     private Integer weavingReserveDays;
     // 人工调整参数（可选）

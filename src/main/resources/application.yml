@@ -4,6 +4,14 @@ spring:
       # Excel 导入大小限制（默认仅 1MB，会报 Maximum upload size exceeded）
       max-file-size: 50MB
       max-request-size: 100MB
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          # 静态资源不缓存：前端 app.js/index.html 更新后浏览器立即生效，
+          # 避免旧缓存导致页面数据不刷新（如 BOM 库列表显示为空）
+          no-cache: true
+          must-revalidate: true
   datasource:
     url: jdbc:postgresql://localhost:5432/scheduling_db?sslmode=prefer
     username: postgres
@@ -13,11 +21,16 @@ spring:
     hibernate:
       # update: 仅根据实体增量更新表结构，绝不清空数据（create 会在每次启动时删库，禁用！）
       ddl-auto: update
-    show-sql: true
+    # 生产环境关闭 SQL 日志（大导入时逐条打印会严重拖慢性能，需要排查时可临时打开）
+    show-sql: false
     properties:
       hibernate:
         format_sql: true
         dialect: org.hibernate.dialect.PostgreSQLDialect
+
+jwt:
+  # JWT 签名密钥：生产环境请通过环境变量 JWT_SECRET 覆盖，长度至少32字节
+  secret: ${JWT_SECRET:ThisIsASuperSecretKeyForSchedulingSystem2026}
 server:
   port: 8080
   error:

@@ -64,15 +64,18 @@ public class OrderController {
         }
     }
 
-    // 🌟 新增：Excel 导出接口
+    // 🌟 新增：Excel 导出接口（支持按年份筛选，避免数据量大时整体导出报错）
     @GetMapping("/export")
     @PreAuthorize("hasAuthority('ROLE_PLANNER') or hasAuthority('ROLE_ADMIN')")
-    public ResponseEntity<byte[]> exportOrders() {
+    public ResponseEntity<byte[]> exportOrders(
+            @RequestParam(value = "year", required = false) Integer year) {
         try {
-            byte[] bytes = orderService.exportOrdersToExcel();
+            // year 为 null 时导出全部（兼容旧行为）；传年份则只导出该年下达的订单
+            byte[] bytes = orderService.exportOrdersToExcel(year);
             org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
             headers.setContentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
-            headers.setContentDispositionFormData("attachment", "Production_Orders_Dashboard.xlsx");
+            String filename = year != null ? "Production_Orders_Dashboard_" + year + ".xlsx" : "Production_Orders_Dashboard.xlsx";
+            headers.setContentDispositionFormData("attachment", filename);
             return new ResponseEntity<>(bytes, headers, org.springframework.http.HttpStatus.OK);
         } catch (Exception e) {
             return ResponseEntity.status(500).body(null);

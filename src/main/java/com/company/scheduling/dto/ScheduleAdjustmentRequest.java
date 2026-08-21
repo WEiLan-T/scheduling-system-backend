@@ -13,16 +13,12 @@ public class ScheduleAdjustmentRequest {
 
     // 🌟 新增：人工调整接口（全局配置）
     private Integer globalBufferDays = 3;     // 默认所有订单留出 3 天缓冲期
-    @Deprecated  // 已废弃：织造结束时间已对齐 deadline，不再提前结束
-    private Integer weavingAdvanceDays = 0;   // 保留字段兼容旧客户端，默认值改为 0
     private Integer weavingReserveDays;        // 织造储备库存天数（null/0 = 不储备，与现状完全一致）
 
     @Data
     public static class ItemAdjustment {
         private String finishedPartNumber;
-        private BigDecimal manualWeavingChangeoverDays;
         private BigDecimal manualCoexCapacity;
-        private Integer manualStartDelayDays;
         private BigDecimal manualWeavingCapacity;
         private Integer manualWeavingMachineCount;  // 手动指定织造机台数
         private Integer manualCoexLineCount;        // 手动指定共挤产线数

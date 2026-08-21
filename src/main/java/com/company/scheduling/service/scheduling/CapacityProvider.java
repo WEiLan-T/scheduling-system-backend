@@ -68,6 +68,7 @@ public class CapacityProvider {
         public BigDecimal resolveWeavingCapacity(String tapePartNumber, String finishedPartNumber,
                                                  BigDecimal manualOverride) {
             if (manualOverride != null && manualOverride.compareTo(BigDecimal.ZERO) > 0) {
+                assertPositive(manualOverride, tapePartNumber);
                 return manualOverride;
             }
             BigDecimal std = weavingByTapePn.get(tapePartNumber);
@@ -83,6 +84,7 @@ public class CapacityProvider {
         public BigDecimal resolveCoexCapacity(String finishedPartNumber, String tapePartNumber,
                                               BigDecimal manualOverride) {
             if (manualOverride != null && manualOverride.compareTo(BigDecimal.ZERO) > 0) {
+                assertPositive(manualOverride, finishedPartNumber);
                 return manualOverride;
             }
             BigDecimal max = coexByFinishedPn.get(finishedPartNumber);
@@ -90,6 +92,15 @@ public class CapacityProvider {
                 return max;
             }
             throw missingCapacity(finishedPartNumber, tapePartNumber, "coexMaxDailyOutput");
+        }
+
+        /**
+         * 出口断言：确保产能值 > 0，防止下游除零异常。
+         */
+        private static void assertPositive(BigDecimal value, String context) {
+            if (value == null || value.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new RuntimeException("产能值必须大于0，请检查工艺库配置：" + context);
+            }
         }
 
         private static RuntimeException missingCapacity(String finishedPartNumber, String tapePartNumber,

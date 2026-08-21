@@ -25,6 +25,8 @@ const app = createApp({
             const user = localStorage.getItem('current_user');
             if (token && user) {
                 isLoggedIn.value = true; currentUser.value = user;
+                // 恢复角色：优先读 localStorage，缺失时从 token 解析
+                currentRole.value = localStorage.getItem('current_role') || parseRoleFromToken(token);
                 loadMachinesAndLines();
                 loadOrders();  // 只加载订单和机台，其他页面切换时按需加载
             }
@@ -68,8 +70,12 @@ const app = createApp({
 
         const isLoggedIn = ref(false);
         const currentUser = ref('');
+        const currentRole = ref('');
         const activeMenu = ref('order-dashboard');
         const loading = ref(false);
+
+        // 🌟 仅管理员可见权限管理页面（后端 @PreAuthorize 双重兕底）
+        const isAdmin = computed(() => currentRole.value === 'ROLE_ADMIN');
 
         const machineList = ref([]);
         const lineList = ref([]);
@@ -82,6 +88,17 @@ const app = createApp({
         const inventorySnapshotDate = ref(null);
         const reconciliationData = ref([]);
         const reconciliationLoading = ref(false);
+
+        // 🌟 按年导出年份选择（防止后期数据量大时全量导出报错；默认当前年，可选历史年份）
+        const exportYearOptions = computed(() => {
+            const currentYear = new Date().getFullYear();
+            const years = [];
+            for (let y = 2023; y <= currentYear + 1; y++) years.push({ value: y, label: y + ' 年' });
+            return years;
+        });
+        const weavingExportYear = ref(new Date().getFullYear());
+        const coexExportYear = ref(new Date().getFullYear());
+        const orderExportYear = ref(new Date().getFullYear());
 
         // ================= AXIOS 拦截器 =================
         axios.interceptors.request.use(config => {
@@ -111,21 +128,37 @@ const app = createApp({
         };
 
         const loginForm = reactive({ username: '', password: '' });
+        // 从 JWT payload 解析角色（base64 解码，无需验签，仅用于前端菜单显隐；后端接口有 @PreAuthorize 兕底）
+        const parseRoleFromToken = (token) => {
+            try {
+                const payload = token.split('.')[1];
+                const json = JSON.parse(decodeURIComponent(escape(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))));
+                return json.role || '';
+            } catch (e) { return ''; }
+        };
         const handleLogin = async () => {
             if (!loginForm.username || !loginForm.password) return;
             loading.value = true;
             try {
                 const res = await axios.post('/api/v1/auth/login', loginForm);
                 if (res.data && res.data.includes('eyJ')) {
-                    localStorage.setItem('jwt_token', res.data.trim()); localStorage.setItem('current_user', loginForm.username);
-                    isLoggedIn.value = true; currentUser.value = loginForm.username; ElMessage.success('核验通过！');
+                    const token = res.data.trim();
+                    localStorage.setItem('jwt_token', token); localStorage.setItem('current_user', loginForm.username);
+                    localStorage.setItem('current_role', parseRoleFromToken(token));
+                    isLoggedIn.value = true; currentUser.value = loginForm.username; currentRole.value = parseRoleFromToken(token);
+                    activeMenu.value = 'order-dashboard'; estResult.value = null; // 新用户登录重置视图，避免残留上一账号页面
+                    ElMessage.success('核验通过！');
                     loadMachinesAndLines(); loadOrders();
                 }
             } catch (error) { if(error.response && error.response.status === 401) ElMessage.error('账号或密码错误！'); else ElMessage.error(errMsg(error)); } finally { loading.value = false; }
         };
 
-        const handleLogout = () => { localStorage.clear(); isLoggedIn.value = false; };
-        const handleMenuSelect = (index) => { activeMenu.value = index; estResult.value = null; };
+        const handleLogout = () => { localStorage.clear(); isLoggedIn.value = false; currentRole.value = ''; activeMenu.value = 'order-dashboard'; estResult.value = null; };
+        const handleMenuSelect = (index) => {
+            activeMenu.value = index; estResult.value = null;
+            // 切换到权限管理页时加载账号与登录日志
+            if (index === 'user-admin' && isAdmin.value) { loadUserList(); loadLoginLogs(); }
+        };
 
         const refreshCurrentPage = () => {
             if (activeMenu.value === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); ElMessage.success('🔄 厂区数字孪生快照已更新'); }
@@ -147,7 +180,93 @@ const app = createApp({
             else if (activeMenu.value === 'inquiry') {
                 ElMessage.success('🔄 询单预估页面已刷新');
             }
+            else if (activeMenu.value === 'user-admin') { loadUserList(); loadLoginLogs(); ElMessage.success('🔄 人员权限与登录日志已刷新'); }
         };
+
+        // ==========================================
+        // 👥 人员权限管理（仅管理员）
+        // ==========================================
+        const userList = ref([]);
+        const userLoading = ref(false);
+        const userDialogVisible = ref(false);
+        const userDialogMode = ref('create'); // create / edit
+        const userForm = reactive({ id: null, username: '', password: '', role: 'ROLE_ENTRY_CLERK' });
+        const roleOptions = [
+            { value: 'ROLE_ADMIN', label: '管理员（全部权限）' },
+            { value: 'ROLE_PLANNER', label: '计划员（排产/询单/库存/工艺）' },
+            { value: 'ROLE_WEAVING_CLERK', label: '织造录单员' },
+            { value: 'ROLE_COEX_CLERK', label: '共挤录单员' },
+            { value: 'ROLE_ENTRY_CLERK', label: '普通录单员' }
+        ];
+        const roleLabel = (role) => { const r = roleOptions.find(o => o.value === role); return r ? r.label : (role || '未知角色'); };
+        const roleTagType = (role) => role === 'ROLE_ADMIN' ? 'danger' : (role === 'ROLE_PLANNER' ? 'warning' : 'info');
+
+        const loginLogList = ref([]);
+        const loginLogLoading = ref(false);
+        const loginLogPage = ref(1);
+        const loginLogPageSize = 20;
+        const loginLogTotal = ref(0);
+
+        const loadUserList = async () => {
+            userLoading.value = true;
+            try {
+                const res = await axios.get('/api/v1/admin/users', { skipErrorHandler: true });
+                userList.value = Array.isArray(res.data) ? res.data : [];
+            } catch (e) { if (e.response && e.response.status !== 403) ElMessage.error(errMsg(e)); }
+            finally { userLoading.value = false; }
+        };
+
+        const openCreateUserDialog = () => {
+            userDialogMode.value = 'create';
+            userForm.id = null; userForm.username = ''; userForm.password = ''; userForm.role = 'ROLE_ENTRY_CLERK';
+            userDialogVisible.value = true;
+        };
+
+        const openEditUserDialog = (row) => {
+            userDialogMode.value = 'edit';
+            userForm.id = row.id; userForm.username = row.username; userForm.password = ''; userForm.role = row.role || 'ROLE_ENTRY_CLERK';
+            userDialogVisible.value = true;
+        };
+
+        const submitUser = async () => {
+            if (!userForm.username || !userForm.username.trim()) { ElMessage.warning('请输入账号名'); return; }
+            if (!userForm.role) { ElMessage.warning('请选择角色'); return; }
+            if (userDialogMode.value === 'create' && !userForm.password) { ElMessage.warning('新建账号必须设置密码'); return; }
+            if (userForm.password && userForm.password.length < 6) { ElMessage.warning('密码长度至少6位'); return; }
+            try {
+                if (userDialogMode.value === 'create') {
+                    await axios.post('/api/v1/admin/users', { username: userForm.username.trim(), password: userForm.password, role: userForm.role });
+                    ElMessage.success('账号 [' + userForm.username.trim() + '] 创建成功！');
+                } else {
+                    await axios.put('/api/v1/admin/users/' + userForm.id, { password: userForm.password || null, role: userForm.role });
+                    ElMessage.success('账号 [' + userForm.username.trim() + '] 已更新！');
+                }
+                userDialogVisible.value = false;
+                loadUserList();
+            } catch (e) { ElMessage.error(errMsg(e)); }
+        };
+
+        const deleteUserAccount = async (row) => {
+            try {
+                await ElMessageBox.confirm('确认删除账号 [' + row.username + '] ？删除后该账号将无法登录。', '高危操作警告', { type: 'warning' });
+                const res = await axios.delete('/api/v1/admin/users/' + row.id);
+                ElMessage.success(typeof res.data === 'string' ? res.data : '账号已删除！');
+                loadUserList();
+            } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); }
+        };
+
+        const loadLoginLogs = async () => {
+            loginLogLoading.value = true;
+            try {
+                const res = await axios.get('/api/v1/admin/login-logs', { params: { page: loginLogPage.value - 1, size: loginLogPageSize }, skipErrorHandler: true });
+                const data = res.data || {};
+                loginLogList.value = data.content || [];
+                loginLogTotal.value = data.totalElements || 0;
+            } catch (e) { if (e.response && e.response.status !== 403) ElMessage.error(errMsg(e)); }
+            finally { loginLogLoading.value = false; }
+        };
+
+        const fmtLogTime = (s) => s ? String(s).replace('T', ' ').substring(0, 19) : '';
 
         // ==========================================
         // 🧶 织造车间 MES
@@ -242,7 +361,7 @@ const app = createApp({
         };
         const deleteWeaving = async (id) => { try { await ElMessageBox.confirm('撤销台账将自动回扣并同步冲减库存，是否继续？', '高危生产警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/weaving/logs/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadWeavingPage(); if (weavingForm.id === id) resetWeavingForm(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
 
-        const exportWeavingExcel = async () => { try { const res = await axios.get('/api/v1/workshops/integration/weaving/export', { responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '织造车间产能明细汇总.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
+        const exportWeavingExcel = async () => { try { const res = await axios.get('/api/v1/workshops/integration/weaving/export', { params: { year: weavingExportYear.value }, responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = `织造车间产能明细汇总_${weavingExportYear.value}年.xlsx`; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
         const handleWeavingImport = async (e) => {
             const file = e.target.files[0]; if (!file) return;
             const fd = new FormData(); fd.append('file', file);
@@ -353,7 +472,7 @@ const app = createApp({
         };
         const deleteCoex = async (id) => { try { await ElMessageBox.confirm('确认删除并退还库存？', '警告', { type: 'warning' }); const res = await axios.delete(`/api/v1/workshops/integration/coextrusion/logs/${id}`, { skipErrorHandler: true }); ElMessage.success(res.data); loadCoexPage(); if (coexForm.id === id) resetCoexForm(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
 
-        const exportCoexExcel = async () => { try { const res = await axios.get('/api/v1/workshops/integration/coextrusion/export', { responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '共挤车间历史台账汇总.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
+        const exportCoexExcel = async () => { try { const res = await axios.get('/api/v1/workshops/integration/coextrusion/export', { params: { year: coexExportYear.value }, responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = `共挤车间历史台账汇总_${coexExportYear.value}年.xlsx`; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
         const handleCoexImport = async (e) => {
             const file = e.target.files[0]; if (!file) return;
             const fd = new FormData(); fd.append('file', file);
@@ -821,7 +940,7 @@ const app = createApp({
             orderItems.value.forEach(item => calcTotal(item)); window.scrollTo({ top: 0, behavior: 'smooth' });
         };
         const deleteOrder = async (orderId) => { try { await ElMessageBox.confirm('数据将永久删除，确认执行？', '警告', { type: 'warning' }); await axios.delete(`/api/v1/workshops/orders/${orderId}`, { skipErrorHandler: true }); ElMessage.success('订单已删除'); loadOrders(); if (orderHeader.orderId === orderId) resetOrderForm(); } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errMsg(e)); } };
-        const exportOrderExcel = async () => { try { const res = await axios.get('/api/v1/workshops/orders/export', { responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = '生产订单排产明细.xlsx'; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
+        const exportOrderExcel = async () => { try { const res = await axios.get('/api/v1/workshops/orders/export', { params: { year: orderExportYear.value }, responseType: 'blob' }); const blob = new Blob([res.data]); const link = document.createElement('a'); link.href = window.URL.createObjectURL(blob); link.download = `生产订单排产明细_${orderExportYear.value}年.xlsx`; link.click(); ElMessage.success('📥 导出成功！'); } catch(e) { ElMessage.error('导出失败'); } };
         const handleOrderImport = async (e) => { const file = e.target.files[0]; if (!file) return; const fd = new FormData(); fd.append('file', file); loading.value = true; try { const res = await axios.post('/api/v1/workshops/orders/import', fd, { headers: { 'Content-Type': 'multipart/form-data' }, skipErrorHandler: true }); ElMessage.success(res.data); loadOrders(); } catch(err) { ElMessage.error(errMsg(err)); } finally { loading.value = false; e.target.value = ''; } };
 
         // ==========================================
@@ -832,12 +951,12 @@ const app = createApp({
             plannedProductionDays: 30,
             globalBufferDays: 3,
             weavingReserveDays: 0,
-            items: [{ finishedPartNumber: '', productName: '', modelSpec: '', metersPerRoll: 0, rollCount: 0 }]
+            items: [{ finishedPartNumber: '', metersPerRoll: 0, rollCount: 0 }]
         });
         const inquiryResult = ref(null);
 
         const addInquiryItem = () => {
-            inquiryForm.items.push({ finishedPartNumber: '', productName: '', modelSpec: '', metersPerRoll: 0, rollCount: 0 });
+            inquiryForm.items.push({ finishedPartNumber: '', metersPerRoll: 0, rollCount: 0 });
         };
         const removeInquiryItem = (index) => {
             if (inquiryForm.items.length > 1) inquiryForm.items.splice(index, 1);
@@ -860,9 +979,6 @@ const app = createApp({
                         .filter(i => i.finishedPartNumber)
                         .map(i => ({
                             finishedPartNumber: i.finishedPartNumber,
-                            productName: i.productName,
-                            modelSpec: i.modelSpec,
-                            totalLength: i.metersPerRoll * i.rollCount,
                             metersPerRoll: i.metersPerRoll,
                             rollCount: i.rollCount
                         })),
@@ -1341,63 +1457,74 @@ const app = createApp({
         const getStatusClass = (status) => { if (!status) return 'status-other'; if (status.includes('产')) return 'status-producing'; if (status.includes('闲')) return 'status-idle'; if (status.includes('停')) return 'status-stopped'; if (status.includes('修')) return 'status-maintenance'; return 'status-other'; };
 
         // 🌟 性能优化：预构建日志索引 Map，避免 O(M*N) 重复 filter
+        // 台账实体字段：织造 machineNo(Integer)、共挤 machineNo(String 存产线号)
         const weavingLogsByMachine = computed(() => {
             const map = {};
             weavingLogList.value.forEach(log => {
-                const id = cleanId(log.machineId);
+                const id = cleanId(log.machineNo);
                 if (!map[id]) map[id] = [];
                 map[id].push(log);
             });
-            Object.values(map).forEach(logs => logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate)));
+            Object.values(map).forEach(logs => logs.sort((a, b) => (b.entryDate || '').localeCompare(a.entryDate || '')));
             return map;
         });
 
         const coexLogsByLine = computed(() => {
             const map = {};
             coexLogList.value.forEach(log => {
-                const id = cleanId(log.lineId);
+                const id = cleanId(log.machineNo);
                 if (!map[id]) map[id] = [];
                 map[id].push(log);
             });
-            Object.values(map).forEach(logs => logs.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate)));
+            Object.values(map).forEach(logs => logs.sort((a, b) => (b.logDate || '').localeCompare(a.logDate || '')));
             return map;
         });
 
-        const computedMachineStatusOptimized = (machineId, logs, globalMaxTime) => {
+        // 🌟 台账账期驱动状态判定：
+        // 是否空闲取决于该资源最新台账的账期日期是否等于全车间最新账期（即最新账期当天是否录入了产能数据）。
+        // 录入是按天录入存在延迟，因此不以真实当前时间为准，而以台账最新账期时间为准。
+        const computeStatusByLatestEntry = (logs, globalLatestDate, dateField) => {
             if (!logs || logs.length === 0) return '空闲';
-            // logs 已预排序（最新在前）
             const latestLog = logs[0];
-            const latestLogTime = new Date(latestLog.entryDate + 'T00:00:00').getTime();
-            const ONE_DAY = 24 * 3600 * 1000;
-            const hasRecentData = (globalMaxTime - latestLogTime) <= ONE_DAY;
-            const r = latestLog.remarks || '';
+            const r = latestLog.remark || latestLog.remarks || '';
             if (r.includes('了机')) return '空闲';
             if (r.includes('开头机')) return '在产';
-            return hasRecentData ? '在产' : '空闲';
+            return (latestLog[dateField] || '') === globalLatestDate ? '在产' : '空闲';
         };
 
-        // 🌟 性能优化：使用预构建索引 + 预计算 globalMaxTime
+        // 🌟 使用预构建索引 + 预计算全局最新账期
+        // 人工锁定状态（维修/停机）优先显示；在产/空闲由台账最新账期自动判定
         const machineStatusMap = computed(() => {
             const map = {};
-            let globalMaxTime = 0;
+            let globalLatestDate = '';
             weavingLogList.value.forEach(l => {
-                const t = new Date(l.entryDate + 'T00:00:00').getTime();
-                if (t > globalMaxTime) globalMaxTime = t;
+                const d = l.entryDate || '';
+                if (d > globalLatestDate) globalLatestDate = d;
             });
             machineList.value.forEach(m => {
-                map[cleanId(m.machineId)] = computedMachineStatusOptimized(m.machineId, weavingLogsByMachine.value[cleanId(m.machineId)] || [], globalMaxTime);
+                const archiveStatus = m.machineStatus || '';
+                if (archiveStatus.includes('修') || archiveStatus.includes('停')) {
+                    map[cleanId(m.machineId)] = archiveStatus;
+                    return;
+                }
+                map[cleanId(m.machineId)] = computeStatusByLatestEntry(weavingLogsByMachine.value[cleanId(m.machineId)] || [], globalLatestDate, 'entryDate');
             });
             return map;
         });
         const lineStatusMap = computed(() => {
             const map = {};
-            let globalMaxTime = 0;
+            let globalLatestDate = '';
             coexLogList.value.forEach(l => {
-                const t = new Date(l.entryDate + 'T00:00:00').getTime();
-                if (t > globalMaxTime) globalMaxTime = t;
+                const d = l.logDate || '';
+                if (d > globalLatestDate) globalLatestDate = d;
             });
             lineList.value.forEach(l => {
-                map[cleanId(l.lineId)] = computedMachineStatusOptimized(l.lineId, coexLogsByLine.value[cleanId(l.lineId)] || [], globalMaxTime);
+                const archiveStatus = l.lineStatus || '';
+                if (archiveStatus.includes('修') || archiveStatus.includes('停')) {
+                    map[cleanId(l.lineId)] = archiveStatus;
+                    return;
+                }
+                map[cleanId(l.lineId)] = computeStatusByLatestEntry(coexLogsByLine.value[cleanId(l.lineId)] || [], globalLatestDate, 'logDate');
             });
             return map;
         });
@@ -1500,47 +1627,58 @@ const app = createApp({
         // 📊 核心仪表盘：织造 & 共挤产线卡片
         // ==========================================
 
-        // 车间颜色映射：为每个 distinct workshopId 分配唯一颜色
+        // 车间颜色映射：织造/共挤按“车间编号”对应同一颜色（如 织造1车间 与 共挤1车间 同为蓝色），
+        // 车间编号从 workshopId 中的数字提取（如“织造1车间”→“1”）；无数字时按出现顺序分配唯一颜色
         const workshopColorMap = computed(() => {
-            const colors = ['#0284c7', '#ca8a04', '#059669', '#dc2626', '#7c3aed', '#db2777'];
+            const palette = ['#0284c7', '#ca8a04', '#059669', '#dc2626', '#7c3aed', '#db2777', '#0891b2', '#ea580c', '#65a30d', '#4f46e5', '#0d9488', '#9333ea'];
             const map = new Map();
             let idx = 0;
             [...machineList.value, ...lineList.value].forEach(item => {
                 const ws = item.workshopId;
                 if (ws && !map.has(ws)) {
-                    map.set(ws, colors[idx % colors.length]);
+                    const m = String(ws).match(/(\d+)/);
+                    map.set(ws, m ? palette[(parseInt(m[1]) - 1) % palette.length] : palette[idx % palette.length]);
                     idx++;
                 }
             });
             return map;
         });
+        // 图例数据：按车间编号分组（同编号的织造/共挤车间共用一色），无编号车间归入“其他”
+        const workshopLegend = computed(() => {
+            const byNum = new Map();
+            [...machineList.value, ...lineList.value].forEach(item => {
+                const ws = item.workshopId;
+                if (!ws) return;
+                const m = String(ws).match(/(\d+)/);
+                const key = m ? parseInt(m[1]) : 0;
+                if (!byNum.has(key)) byNum.set(key, { names: [], color: workshopColorMap.value.get(ws) || '#94a3b8' });
+                const g = byNum.get(key);
+                if (!g.names.includes(ws)) g.names.push(ws);
+            });
+            return Array.from(byNum.entries()).sort((a, b) => a[0] - b[0]).map(([num, g]) => ({
+                num, color: g.color,
+                label: num > 0 ? num + '车间' : (g.names[0] || '其他'),
+                names: g.names
+            }));
+        });
 
         const factoryMachines = computed(() => {
             return machineList.value.map(m => {
                 const logs = weavingLogsByMachine.value[cleanId(m.machineId)] || [];
-                const latest = logs[0] || {};
+                const latest = logs[0] || null;
 
                 const realStatus = machineStatusMap.value[cleanId(m.machineId)];
-                const currentTape = realStatus === '在产' ? (latest.tapePartNumber || '无任务') : '无任务';
 
-                let orderId = '无订单';
-                let accum = 0; let total = 0;
-
-                if (currentTape !== '无任务') {
-                    const progress = getWeavingOrderProgress(currentTape, m.machineId);
-                    orderId = progress.orderId;
-                    accum = progress.accum;
-                    total = progress.total;
-                }
-
+                // 🌟 取消订单绑定：卡片直接展示该机台织造台账最新录入的一条数据
                 return {
                     ...m,
                     machineStatus: realStatus,
-                    currentTape: currentTape,
-                    currentOrder: orderId,
-                    accum: accum,
-                    total: total,
-                    operator: realStatus === '在产' ? (latest.operatorName || m.operatorName || '未知') : '未知',
+                    latestTape: latest ? (latest.tapeCode || latest.partNumber || '—') : '—',
+                    latestModelSpec: latest ? (latest.modelSpec || '—') : '—',
+                    latestShift: latest ? (latest.shiftType || '—') : '—',
+                    latestOutput: latest ? (latest.shiftOutput || 0) : 0,
+                    latestLogDate: latest ? (latest.entryDate || '') : '',   // 最新台账账期（显示在圆圈内）
+                    operator: latest ? (latest.workerName || m.operatorName || '未知') : (m.operatorName || '未知'),
                     statusClass: getStatusClass(realStatus),
                     workshopColor: workshopColorMap.value.get(m.workshopId) || '#94a3b8'
                 };
@@ -1554,34 +1692,74 @@ const app = createApp({
         const factoryLines = computed(() => {
             return lineList.value.map(l => {
                 const logs = coexLogsByLine.value[cleanId(l.lineId)] || [];
-                const latest = logs[0] || {};
+                const latest = logs[0] || null;
 
                 const realStatus = lineStatusMap.value[cleanId(l.lineId)];
-                let orderId = '无任务';
-                let finishedPn = '无任务';
-                let accum = 0; let total = 0;
 
-                if (realStatus === '在产' && latest.orderNumber && latest.finishedPartNumber) {
-                    orderId = latest.orderNumber;
-                    finishedPn = latest.finishedPartNumber;
-                    const progress = getCoexOrderProgress(orderId, finishedPn, l.lineId);
-                    accum = progress.accum;
-                    total = progress.total;
-                }
-
+                // 🌟 取消订单绑定：卡片直接展示该产线共挤台账最新录入的一条数据
                 return {
                     ...l,
                     lineStatus: realStatus,
-                    currentOrder: orderId,
-                    currentFinished: finishedPn,
-                    accum: accum,
-                    total: total,
-                    currentSpeed: realStatus === '在产' ? (latest.productionSpeed || 0) : 0,
+                    latestProductModel: latest ? (latest.productModel || '—') : '—',
+                    latestColor: latest ? (latest.color || '—') : '—',
+                    latestOutput: latest ? (latest.capacityMeters || 0) : 0,
+                    latestLogDate: latest ? (latest.logDate || '') : '',      // 最新台账账期（显示在卡片内）
                     statusClass: getStatusClass(realStatus),
                     workshopColor: workshopColorMap.value.get(l.workshopId) || '#94a3b8'
                 };
             }).sort((a, b) => parseInt(cleanId(a.lineId)) - parseInt(cleanId(b.lineId)));
         });
+
+        // ==========================================
+        // 🛠️ 仪表盘人工修改机台/产线状态
+        // ==========================================
+        const statusDialogVisible = ref(false);
+        const statusSaving = ref(false);
+        const statusDialogTarget = reactive({ type: '', id: '', title: '', currentStatus: '', newStatus: '' });
+        const statusOptions = ['在产', '空闲', '维修', '停机'];
+        // 权限：管理员/计划员可改全部；织造录单员改机台，共挤录单员改产线
+        const canEditMachineStatus = computed(() => ['ROLE_ADMIN', 'ROLE_PLANNER', 'ROLE_WEAVING_CLERK'].includes(currentRole.value));
+        const canEditLineStatus = computed(() => ['ROLE_ADMIN', 'ROLE_PLANNER', 'ROLE_COEX_CLERK'].includes(currentRole.value));
+        const openMachineStatusDialog = (m) => {
+            if (!canEditMachineStatus.value) { ElMessage.warning('当前账号无权限修改机台状态'); return; }
+            statusDialogTarget.type = 'machine';
+            statusDialogTarget.id = m.machineId;
+            statusDialogTarget.title = '修改织造机台 ' + String(m.machineId).replace(/#/g, '') + '# 状态';
+            statusDialogTarget.currentStatus = m.machineStatus || '未知';
+            statusDialogTarget.newStatus = m.machineStatus || '在产';
+            statusDialogVisible.value = true;
+        };
+        const openLineStatusDialog = (l) => {
+            if (!canEditLineStatus.value) { ElMessage.warning('当前账号无权限修改产线状态'); return; }
+            statusDialogTarget.type = 'line';
+            statusDialogTarget.id = l.lineId;
+            statusDialogTarget.title = '修改共挤产线 ' + String(l.lineId).replace(/[#线]/g, '') + '# 状态';
+            statusDialogTarget.currentStatus = l.lineStatus || '未知';
+            statusDialogTarget.newStatus = l.lineStatus || '在产';
+            statusDialogVisible.value = true;
+        };
+        const submitStatusChange = async () => {
+            if (!statusDialogTarget.newStatus) { ElMessage.warning('请选择状态'); return; }
+            statusSaving.value = true;
+            try {
+                if (statusDialogTarget.type === 'machine') {
+                    const machine = machineList.value.find(x => cleanId(x.machineId) === cleanId(statusDialogTarget.id));
+                    if (!machine) throw new Error('未找到机台档案');
+                    const payload = { ...machine, machineStatus: statusDialogTarget.newStatus };
+                    const res = await axios.post('/api/v1/workshops/integration/weaving/machines', payload, { skipErrorHandler: true });
+                    ElMessage.success(typeof res.data === 'string' ? res.data : '机台状态已更新');
+                } else {
+                    const line = lineList.value.find(x => cleanId(x.lineId) === cleanId(statusDialogTarget.id));
+                    if (!line) throw new Error('未找到产线档案');
+                    const payload = { ...line, lineStatus: statusDialogTarget.newStatus };
+                    const res = await axios.post('/api/v1/workshops/integration/coextrusion/lines', payload, { skipErrorHandler: true });
+                    ElMessage.success(typeof res.data === 'string' ? res.data : '产线状态已更新');
+                }
+                statusDialogVisible.value = false;
+                await loadMachinesAndLines();   // 刷新档案，仪表卡片状态即时同步
+            } catch (e) { ElMessage.error(errMsg(e)); }
+            finally { statusSaving.value = false; }
+        };
 
         // ==========================================
         // 📈 实时订单执行仪表看板测算引擎 (订单甘特图)
@@ -1814,7 +1992,26 @@ const app = createApp({
                 ElMessage.success('已根据人工调整参数重新推演！');
             } catch (error) {
                 const msg = error.response?.data?.message || error.response?.data || '';
-                ElMessage.error(typeof msg === 'string' && msg ? msg : '重新推演失败');
+                const msgStr = typeof msg === 'string' ? msg : '';
+                if (msgStr.startsWith('MISSING_PROCESS:')) {
+                    const pn = msgStr.split(':')[1];
+                    ElMessageBox.warning(`未找到成品 [${pn}] 的工艺路线定义，请先前往维护绑定关系！`, '防呆拦截');
+                    openAddProcess();
+                    processForm.finishedPartNumber = pn;
+                    activeMenu.value = 'process';
+                } else if (msgStr.startsWith('MISSING_CAPACITY:')) {
+                    const parts = msgStr.split(':');
+                    capacityPrompt.finishedPartNumber = parts[1];
+                    capacityPrompt.tapePartNumber = parts[2];
+                    capacityPrompt.missingField = parts[3] || '';
+                    manualCap.weaving = 1000; manualCap.coex = 1500; manualCap.saveToProcess = false;
+                    capacitySource.value = 'estimation';
+                    capacityDialogVisible.value = true;
+                } else if (msgStr) {
+                    ElMessage.error(msgStr);
+                } else {
+                    ElMessage.error('重新推演失败，请检查订单数据是否完整');
+                }
             } finally {
                 loading.value = false;
             }
@@ -2044,9 +2241,10 @@ const app = createApp({
         // 🌟 将新页面加入到路由刷新监听器中
         const loadedPages = ref(new Set());
         watch(activeMenu, (newVal) => {
+            // 🌟 仪表页为实时快照：每次切入都强制重拉机台/产线档案与台账，保证档案更新后仪表即时同步
+            if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); return; }
             if (loadedPages.value.has(newVal)) return;
             loadedPages.value.add(newVal);
-            if (newVal === 'dashboard') { loadMachinesAndLines(); loadWeavingLogs(); loadCoexLogs(); loadInventory(); }
             if (newVal === 'inventory') loadInventory(); 
             if (newVal === 'weaving') { loadWeavingPage(); loadProcesses(true); }
             if (newVal === 'coex') { loadCoexPage(); loadProcesses(true); } 
@@ -2117,10 +2315,11 @@ const app = createApp({
         const lineStatusFilterOpts = computed(() => lF('lineStatus'));
 
         return {
-            isLoggedIn, currentUser, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect, refreshCurrentPage, machineList, lineList,
-            weavingForm, weavingLogList, submitWeaving, openEditWeaving, deleteWeaving, resetWeavingForm, weavingFileRef, exportWeavingExcel, handleWeavingImport, weavingKeyword, weavingMachineFilterOptions, weavingShiftFilterOptions, weavingPage, weavingPageSize, paginatedWeavingLogs, weavingTotal, loadWeavingPage, searchWeaving, handleWeavingFilterChange, onWeavingSizeChange, onWeavingPageChange, recheckGradeB,
+            isLoggedIn, currentUser, currentRole, isAdmin, activeMenu, loading, loginForm, handleLogin, handleLogout, handleMenuSelect, refreshCurrentPage, machineList, lineList,
+            weavingForm, weavingLogList, submitWeaving, openEditWeaving, deleteWeaving, resetWeavingForm, weavingFileRef, exportWeavingExcel, handleWeavingImport, weavingKeyword, weavingMachineFilterOptions, weavingShiftFilterOptions, weavingPage, weavingPageSize, paginatedWeavingLogs, weavingTotal, loadWeavingPage, searchWeaving, handleWeavingFilterChange, onWeavingSizeChange, onWeavingPageChange, recheckGradeB, weavingExportYear,
+            exportYearOptions,
             clientColumnFilter, weavingEntryDateFilterOpts, weavingPartNumberFilterOpts, weavingTapeCodeFilterOpts, weavingModelSpecFilterOpts, weavingWarpThreadFilterOpts, weavingWeftThreadFilterOpts, weavingDataQualityFilterOpts, weavingWorkerNameFilterOpts, weavingShiftOutputFilterOpts,
-            coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm, coexFileRef, exportCoexExcel, handleCoexImport, coexKeyword, coexMachineFilterOptions, coexModelFilterOptions, coexColorFilterOptions, coexPage, coexPageSize, paginatedCoexLogs, coexTotal, loadCoexPage, searchCoex, handleCoexFilterChange, onCoexSizeChange, onCoexPageChange, coexImportYear,
+            coexForm, coexLogList, submitCoex, openEditCoex, deleteCoex, resetCoexForm, coexFileRef, exportCoexExcel, handleCoexImport, coexKeyword, coexMachineFilterOptions, coexModelFilterOptions, coexColorFilterOptions, coexPage, coexPageSize, paginatedCoexLogs, coexTotal, loadCoexPage, searchCoex, handleCoexFilterChange, onCoexSizeChange, onCoexPageChange, coexImportYear, coexExportYear,
             coexLogDateFilterOpts, coexProductTypeFilterOpts, coexMainMaterialFilterOpts, coexWeightKgFilterOpts, coexCapacityMetersFilterOpts, coexLeakageKgFilterOpts, coexSourceYearFilterOpts, coexDataQualityFilterOpts,
             invSearchKeyword, inventoryList, invLoading, invDialogVisible, invSaveLoading, invForm, loadInventory, openAddInv, openEditInv, saveInv, deleteInv, invPage, invPageSize, paginatedInventoryList, invTotal, invStockTypeFilterOptions, searchInventory, handleInvFilterChange, onInvSizeChange, onInvPageChange,
             invPartNumberFilterOpts, invModelSpecFilterOpts, invSnapshotDateFilterOpts,
@@ -2139,16 +2338,21 @@ const app = createApp({
             machineIdFilterOpts, machineCaliberMinFilterOpts, machineCaliberMaxFilterOpts, machineWorkshopFilterOpts, machineStatusFilterOpts, machineOperatorFilterOpts,
             lineArchiveKeyword, lineArchivePage, lineArchivePageSize, lineArchiveTotal, paginatedLineArchiveList, lineDialogVisible, lineArchiveEditMode, lineForm, lineFileRef, searchLineArchive, openAddLineArchive, openEditLineArchive, saveLineArchive, deleteLineArchive, handleLineArchiveImport, exportLineArchiveExcel,
             lineIdFilterOpts, lineCaliberMinFilterOpts, lineCaliberMaxFilterOpts, lineWorkshopFilterOpts, lineStatusFilterOpts,
-            allWeavingMachines, factoryLines, workshopColorMap,
+            allWeavingMachines, factoryLines, workshopColorMap, workshopLegend,
+            statusDialogVisible, statusSaving, statusDialogTarget, statusOptions, canEditMachineStatus, canEditLineStatus, openMachineStatusDialog, openLineStatusDialog, submitStatusChange,
             executionCurrentTime, dashboardTimeline, currentLineX, dashboardRowsWithPos, dashboardViewDays,
-            orderFileRef, exportOrderExcel, handleOrderImport, orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX,
+            orderFileRef, exportOrderExcel, handleOrderImport, orderViewDays, orderGanttRowsWithPos, orderGanttTimeline, orderGanttCurrentLineX, orderExportYear,
             multiOrderMode, selectedOrderIds, fetchMultiOrderSchedule, multiOrderResult,
             scheduleSummaryMap, loadScheduleSummary, orderSuggestions,
             drillDownDialogVisible, drillDownOrderId, drillDownDetail, drillDownLoading,
             drillDownGanttTimeline, drillDownGanttRows, openOrderDetail,
             allSchedulePlans, loadAllSchedulePlans, dashboardRowsWithPlanOverlay,
             applyManualAdjustments,
-            debouncedApplyAdjustments, debouncedFetchInquiry
+            debouncedApplyAdjustments, debouncedFetchInquiry,
+            // 👥 人员权限管理（仅管理员）
+            userList, userLoading, userDialogVisible, userDialogMode, userForm, roleOptions, roleLabel, roleTagType,
+            loginLogList, loginLogLoading, loginLogPage, loginLogPageSize, loginLogTotal,
+            loadUserList, openCreateUserDialog, openEditUserDialog, submitUser, deleteUserAccount, loadLoginLogs, fmtLogTime
         };
     }
 });

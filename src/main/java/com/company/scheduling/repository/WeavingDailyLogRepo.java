@@ -35,6 +35,9 @@ public interface WeavingDailyLogRepo extends JpaRepository<WeavingDailyLog, Long
     // 判断某机台号是否被台账引用（机台档案删除前引用校验）
     boolean existsByMachineNo(Integer machineNo);
 
+    /** 按年份查询台账记录（供按年导出Excel，避免全量导出自增数据超载） */
+    List<WeavingDailyLog> findByEntryYearOrderByEntryDateDescIdDesc(Integer entryYear);
+
     // 统计日期范围内的记录数
     @Query("SELECT COUNT(w) FROM WeavingDailyLog w WHERE w.entryDate BETWEEN :start AND :end")
     long countByDateRange(@Param("start") LocalDate start, @Param("end") LocalDate end);

@@ -5,7 +5,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -14,11 +13,11 @@ public interface EstimatedProductionScheduleRepo extends JpaRepository<Estimated
 
     // 🌟 查询织造车间目前已经排到的最晚完工日期
     @Query("SELECT MAX(e.weavingEndDate) FROM EstimatedProductionSchedule e")
-    LocalDate findMaxWeavingEndDate();
+    LocalDateTime findMaxWeavingEndDate();
 
     // 🌟 查询共挤车间目前已经排到的最晚完工日期
     @Query("SELECT MAX(e.coexEndDate) FROM EstimatedProductionSchedule e")
-    LocalDate findMaxCoexEndDate();
+    LocalDateTime findMaxCoexEndDate();
 
     List<EstimatedProductionSchedule> findByWeavingMachineIdAndWeavingEndDateAfter(String machineId, LocalDateTime after);
 

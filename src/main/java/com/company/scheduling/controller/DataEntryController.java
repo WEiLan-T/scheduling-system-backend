@@ -124,10 +124,13 @@ public class DataEntryController {
 
     @GetMapping("/weaving/export")
     @PreAuthorize("hasAuthority('ROLE_WEAVING_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
-    public ResponseEntity<byte[]> exportWeaving() {
-        byte[] data = dataExportService.exportWeavingToExcel();
+    public ResponseEntity<byte[]> exportWeaving(
+            @RequestParam(value = "year", required = false) Integer year) {
+        // year 为 null 时导出全部（兼容旧行为）；传年份则只导出该年台账，避免数据量大时整体导出报错
+        byte[] data = dataExportService.exportWeavingToExcel(year);
+        String filename = year != null ? "weaving_export_" + year + ".xlsx" : "weaving_export.xlsx";
         return ResponseEntity.ok()
-                .header("Content-Disposition", "attachment; filename=weaving_export.xlsx")
+                .header("Content-Disposition", "attachment; filename=" + filename)
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .body(data);
     }
@@ -164,10 +167,13 @@ public class DataEntryController {
 
     @GetMapping("/coextrusion/export")
     @PreAuthorize("hasAuthority('ROLE_COEX_CLERK') or hasAuthority('ROLE_ADMIN') or hasAuthority('ROLE_PLANNER')")
-    public ResponseEntity<byte[]> exportCoex() {
-        byte[] data = dataExportService.exportCoexToExcel();
+    public ResponseEntity<byte[]> exportCoex(
+            @RequestParam(value = "year", required = false) Integer year) {
+        // year 为 null 时导出全部（兼容旧行为）；传年份则只导出该年台账，避免数据量大时整体导出报错
+        byte[] data = dataExportService.exportCoexToExcel(year);
+        String filename = year != null ? "coex_export_" + year + ".xlsx" : "coex_export.xlsx";
         return ResponseEntity.ok()
-                .header("Content-Disposition", "attachment; filename=coex_export.xlsx")
+                .header("Content-Disposition", "attachment; filename=" + filename)
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .body(data);
     }
@@ -327,7 +333,7 @@ public class DataEntryController {
     }
 
     @PostMapping("/weaving/machines")
-    @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('ROLE_WEAVING_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
     public ResponseEntity<String> saveWeavingMachine(@RequestBody WeavingMachineStatus machine, Principal principal) {
         return ResponseEntity.ok(dataEntryService.saveOrUpdateWeavingMachine(machine, principal.getName()));
     }
@@ -363,7 +369,7 @@ public class DataEntryController {
     }
 
     @PostMapping("/coextrusion/lines")
-    @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('ROLE_COEX_CLERK', 'ROLE_ADMIN', 'ROLE_PLANNER')")
     public ResponseEntity<String> saveCoexLine(@RequestBody CoexLineStatus line, Principal principal) {
         return ResponseEntity.ok(dataEntryService.saveOrUpdateCoexLine(line, principal.getName()));
     }

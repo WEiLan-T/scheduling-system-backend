@@ -44,7 +44,8 @@ public class InquiryCalculator {
         if (items == null || items.isEmpty()) {
             throw new RuntimeException("询单明细不能为空！");
         }
-        int plannedDays = request.getPlannedProductionDays() != null ? request.getPlannedProductionDays() : 30;
+        int originalPlannedDays = request.getPlannedProductionDays() != null ? request.getPlannedProductionDays() : 30;
+        int plannedDays = originalPlannedDays;
         int bufferDays = request.getGlobalBufferDays() != null ? request.getGlobalBufferDays() : 3;
         // 算法简化：已取消 weavingAdvanceDays，共挤开始时间直接对齐织造结束时间
 
@@ -66,6 +67,59 @@ public class InquiryCalculator {
 
         // 产能快照：一次 findAll 构建工艺库标准产能 O(1) 查找 Map
         CapacityProvider.CapacitySnapshot capSnapshot = capacityProvider.loadSnapshot();
+
+        // 0. 产能利用率检验（预估 pass）：按当前拟生产天数预估各明细的推荐资源数与利用率，
+        //    利用率 < 90%（产能富余 > 10%）时，将拟生产天数压缩为触发明细中"实际所需天数"的最大值
+        //    （实际所需天数 = 需求 / (日产能 × 资源数) 向上取整）；压缩后主循环按新拟天数自动重算
+        //    推荐资源数，甘特图行日期同步更新。TapeStockConsumer.consume 为纯只读模拟，双 pass 安全。
+        int requiredDaysOverall = 0;
+        boolean needCompressDays = false;
+        for (InquiryRequest.InquiryItem item : items) {
+            String fPn = item.getFinishedPartNumber();
+            if (fPn == null || fPn.isBlank()) continue;
+            ProductProcess proc = processRepo.findByFinishedPartNumber(fPn).orElse(null);
+            if (proc == null) continue;
+            BigDecimal preMeters = calcFinishedMeters(item);
+            if (preMeters == null || preMeters.compareTo(BigDecimal.ZERO) <= 0) continue;
+            TapeStockConsumer.ConsumptionResult preStock = stockConsumer.consume(proc.getTapePartNumber(), proc.getTapeModelSpec(), preMeters);
+            BigDecimal preShortfall = preStock.getShortfall();
+            InquiryRequest.ItemResourceOverride ov = overrideMap.get(fPn);
+            BigDecimal preWCap = capSnapshot.resolveWeavingCapacity(proc.getTapePartNumber(), fPn,
+                    ov != null ? ov.getManualWeavingCapacity() : null);
+            BigDecimal preCCap = capSnapshot.resolveCoexCapacity(fPn, proc.getTapePartNumber(),
+                    ov != null ? ov.getManualCoexCapacity() : null);
+            BigDecimal preDaysBD = new BigDecimal(plannedDays);
+            int preMCount = preShortfall.compareTo(preWCap.multiply(preDaysBD)) > 0
+                    ? preShortfall.divide(preWCap.multiply(preDaysBD), 4, RoundingMode.HALF_UP).setScale(0, RoundingMode.CEILING).intValue() : 1;
+            int preLCount = preMeters.compareTo(preCCap.multiply(preDaysBD)) > 0
+                    ? preMeters.divide(preCCap.multiply(preDaysBD), 4, RoundingMode.HALF_UP).setScale(0, RoundingMode.CEILING).intValue() : 1;
+            if (ov != null) {
+                if (ov.getMachineCount() != null && ov.getMachineCount() > 0) preMCount = ov.getMachineCount();
+                if (ov.getLineCount() != null && ov.getLineCount() > 0) preLCount = ov.getLineCount();
+            }
+            // 利用率 = 需求 / (日产能 × 拟天数 × 资源数)；织造无缺口时视为 1（无产能压力）
+            BigDecimal preWUtil = preShortfall.compareTo(BigDecimal.ZERO) > 0
+                    ? preShortfall.divide(preWCap.multiply(preDaysBD).multiply(new BigDecimal(preMCount)), 4, RoundingMode.HALF_UP)
+                    : BigDecimal.ONE;
+            BigDecimal preCUtil = preMeters.divide(preCCap.multiply(preDaysBD).multiply(new BigDecimal(preLCount)), 4, RoundingMode.HALF_UP);
+            if (preWUtil.min(preCUtil).compareTo(new BigDecimal("0.9")) >= 0) continue;
+            needCompressDays = true;
+            // 实际所需天数 = 需求 / (日产能 × 资源数) 向上取整（仅计算有需求的部分）
+            int preRequiredDays = 1;
+            if (preShortfall.compareTo(BigDecimal.ZERO) > 0 && preMCount > 0) {
+                preRequiredDays = Math.max(preRequiredDays,
+                        preShortfall.divide(preWCap.multiply(new BigDecimal(preMCount)), 0, RoundingMode.CEILING).intValue());
+            }
+            if (preLCount > 0) {
+                preRequiredDays = Math.max(preRequiredDays,
+                        preMeters.divide(preCCap.multiply(new BigDecimal(preLCount)), 0, RoundingMode.CEILING).intValue());
+            }
+            requiredDaysOverall = Math.max(requiredDaysOverall, preRequiredDays);
+        }
+        // 压缩拟生产天数（只减不增）：保证所有明细都能在压缩后拟天数内由重算后的资源数完成
+        if (needCompressDays && requiredDaysOverall > 0 && requiredDaysOverall < plannedDays) {
+            plannedDays = requiredDaysOverall;
+        }
 
         List<Map<String, Object>> itemSchedules = new ArrayList<>();
         // 需求6：带坯供给模拟冲突告警收集容器
@@ -106,7 +160,9 @@ public class InquiryCalculator {
             BigDecimal reserveMeters = reserve[0];
             int reserveAdvanceDays = reserve[1].intValue();
 
-            // 4. 计算推荐资源数
+            // 4. 计算推荐资源数（除零保护：wCap/cCap 已由 CapacityProvider 保证 > 0，但加显式 guard）
+            if (wCap.compareTo(BigDecimal.ZERO) <= 0) wCap = new BigDecimal("1");
+            if (cCap.compareTo(BigDecimal.ZERO) <= 0) cCap = new BigDecimal("1");
             BigDecimal plannedDaysBD = new BigDecimal(plannedDays);
             int recommendedMachineCount = 1;
             int recommendedLineCount = 1;
@@ -178,26 +234,25 @@ public class InquiryCalculator {
             }
 
             // 8. 正排时间推导（同一成品各行共享同一基准时点）；
-            // 织造总米数含储备：totalWeavePerMachine = splitShortfall + splitReserveMeters
-            BigDecimal splitReserveMeters = machineCount > 0
-                ? reserveMeters.divide(new BigDecimal(machineCount), 4, RoundingMode.HALF_UP)
-                : reserveMeters;
-            BigDecimal totalWeavePerMachine = splitShortfall.add(splitReserveMeters);
+            // 每台机台织造量 = 缺口均分（储备仅决定共挤开机时点，不计入织造总量，避免超量排产）
+            BigDecimal totalWeavePerMachine = splitShortfall;
             BigDecimal splitWHours = totalWeavePerMachine.divide(wCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
             BigDecimal splitCHours = splitFinished.divide(cCap, 4, RoundingMode.HALF_UP).multiply(new BigDecimal("24"));
-            // 正向排产：从现在起算，储备生产时间已包含在 splitWHours 中
+            // 正向排产：从现在起算，共挤开机时点由下方 coexStartRef 的储备提前天数控制
             LocalDateTime weavingStartRef = now;
             LocalDateTime weavingEndRef = now.plusMinutes(splitWHours.multiply(new BigDecimal("60")).longValue());
-            // 共挤开机 = 织造开工 + 储备提前天数（储备就绪即开机，不变）
-            LocalDateTime coexStartRef = now.plusDays(reserveAdvanceDays);
+            // 共挤开机：仅在有织造缺口时才应用储备提前天数；shortfall=0 时直接从 now 开始
+            LocalDateTime coexStartRef;
+            if (shortfall.compareTo(BigDecimal.ZERO) > 0) {
+                coexStartRef = now.plusDays(reserveAdvanceDays);
+            } else {
+                coexStartRef = now;
+            }
             LocalDateTime coexEndRef = coexStartRef.plusMinutes(splitCHours.multiply(new BigDecimal("60")).longValue());
             // 安全保障：共挤停机不早于织造停机（共挤连续不停机）
             if (coexEndRef.isBefore(weavingEndRef)) {
                 coexEndRef = weavingEndRef;
             }
-
-            BigDecimal changeoverDays = new BigDecimal("1");
-            Integer delayDays = 1;
 
             // 9. 织造独立出行：每台机台一行织造资源行
             List<String> weavingMachineIds = new ArrayList<>();
@@ -220,10 +275,8 @@ public class InquiryCalculator {
                 wDates.startDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingStartRef : null;
                 wDates.endDate = shortfall.compareTo(BigDecimal.ZERO) > 0 ? weavingEndRef : null;
                 wDates.algoWeavingCapacity = wCap;
-                wDates.algoChangeoverDays = changeoverDays;
                 ScheduleDates cDates = new ScheduleDates();
                 cDates.algoCoexCapacity = cCap;
-                cDates.algoDelayDays = delayDays;
 
                 Map<String, Object> draftItem = buildDraftView(fPn, tapePartNumber,
                         proc.getWarpSpec(), proc.getWeftSpec(),
@@ -257,12 +310,10 @@ public class InquiryCalculator {
 
                 ScheduleDates wDates = new ScheduleDates();
                 wDates.algoWeavingCapacity = wCap;
-                wDates.algoChangeoverDays = changeoverDays;
                 ScheduleDates cDates = new ScheduleDates();
                 cDates.startDate = coexStartRef;
                 cDates.endDate = coexEndRef;
                 cDates.algoCoexCapacity = cCap;
-                cDates.algoDelayDays = delayDays;
 
                 Map<String, Object> draftItem = buildDraftView(fPn, tapePartNumber,
                         proc.getWarpSpec(), proc.getWeftSpec(),
@@ -299,7 +350,11 @@ public class InquiryCalculator {
         Map<String, Object> result = new HashMap<>();
         result.put("orderId", "询单预估");
         result.put("inquiryMode", true);
-        result.put("plannedProductionDays", request.getPlannedProductionDays());
+        result.put("plannedProductionDays", plannedDays);
+        // 产能利用率压缩提示：仅当拟生产天数被压缩时返回原始值，前端据此展示压缩说明
+        if (plannedDays < originalPlannedDays) {
+            result.put("daysCompressedFrom", originalPlannedDays);
+        }
         result.put("overallStartDate", overallStartDate.toString());
         result.put("overallEndDate", overallEndDate.toString());
         result.put("totalDays", totalDays);
@@ -344,8 +399,6 @@ public class InquiryCalculator {
         LocalDateTime endDate;
         BigDecimal algoWeavingCapacity;
         BigDecimal algoCoexCapacity;
-        BigDecimal algoChangeoverDays;
-        Integer algoDelayDays;
     }
 
     private Map<String, Object> buildDraftView(String fPn, String tPn, String warp, String weft,
@@ -371,8 +424,6 @@ public class InquiryCalculator {
         m.put("coexEnd", c.endDate != null ? c.endDate.toString() : null);
         m.put("weavingCapacity", w.algoWeavingCapacity);
         m.put("coexCapacity", c.algoCoexCapacity);
-        m.put("changeoverDays", w.algoChangeoverDays);
-        m.put("startDelay", c.algoDelayDays);
         // 织造储备库存展示字段：储备米数与对应提前开工天数（缺省 0）
         m.put("reserveMeters", reserveMeters);
         m.put("reserveAdvanceDays", reserveAdvanceDays);
@@ -404,7 +455,27 @@ public class InquiryCalculator {
             m.put("glueTotalKg", null);
             m.put("materialType", null);
         }
+        // 计划天数与产能验证字段：供前端甘特图 tooltip 和调度表产能验证列使用；
+        // 天数经产能利用率检验：利用率 < 90% 时按实际生产时长压缩天数显示（口径与排产引擎一致）
+        long plannedWeavingDays = SchedulingEngine.calcPlannedDays(w.startDate, w.endDate, tNeed, w.algoWeavingCapacity);
+        long plannedCoexDays = SchedulingEngine.calcPlannedDays(c.startDate, c.endDate, fMeters, c.algoCoexCapacity);
+        m.put("plannedWeavingDays", plannedWeavingDays);
+        m.put("plannedCoexDays", plannedCoexDays);
+        m.put("weavingCapacityUtilization", calcUtilization(tNeed, w.algoWeavingCapacity, plannedWeavingDays));
+        m.put("coexCapacityUtilization", calcUtilization(fMeters, c.algoCoexCapacity, plannedCoexDays));
         return m;
+    }
+
+    /**
+     * 产能利用率计算：需求米数 / (日产能 × 天数)。
+     * >1 表示产能不足，≤1 表示产能充足。日产能或天数为 0 时返回 0。
+     */
+    private static BigDecimal calcUtilization(BigDecimal demandMeters, BigDecimal dailyCapacity, long days) {
+        if (dailyCapacity == null || dailyCapacity.compareTo(BigDecimal.ZERO) <= 0 || days <= 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal totalCapacity = dailyCapacity.multiply(new BigDecimal(days));
+        return demandMeters.divide(totalCapacity, 4, RoundingMode.HALF_UP);
     }
 
     private BigDecimal calcFinishedMeters(InquiryRequest.InquiryItem item) {

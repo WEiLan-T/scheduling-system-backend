@@ -28,6 +28,9 @@ public interface CoexDailyLogRepo extends JpaRepository<CoexDailyLog, Long> {
     // 判断某产线号是否被台账引用（共挤台账 machine_no 字段直接存产线号；产线档案删除前引用校验）
     boolean existsByMachineNo(String machineNo);
 
+    /** 按日志日期区间查询台账记录（供按年导出Excel，避免全量导出自增数据超载） */
+    List<CoexDailyLog> findByLogDateBetweenOrderByLogDateDescIdDesc(LocalDate start, LocalDate end);
+
     /**
      * 按带坯零件号聚合共挤消耗（SQL GROUP BY），用于日库存推算：
      * 共挤台账无带坯零件号字段，通过工艺路线（产品型号→成品型号→带坯零件号）关联，

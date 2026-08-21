@@ -48,9 +48,13 @@ public class DataExportService {
      * 列: 零件号|年|月|日|机台号|带坯编号|型号规格|经线|纬线|班次|姓名|当班产量|标准产能|标准小时|标准小时产能|绩效工时|备注
      *     |经线米重|纬线米重（2000D）|纬线米重（3000D）|经线耗用kg/m|纬线耗用kg/m(2000D)|纬线耗用kg/m(3000D)|数据质量
      * 前23列与源文件 25-26织造数据.xlsx Sheet1 表头一致，末列数据质量为系统附加列
+     *
+     * @param year 导出年份（4位）；null 表示导出全部（兼容旧行为，数据量大时建议按年导出）
      */
-    public byte[] exportWeavingToExcel() {
-        List<WeavingDailyLog> logs = weavingRepo.findAll();
+    public byte[] exportWeavingToExcel(Integer year) {
+        List<WeavingDailyLog> logs = year != null
+                ? weavingRepo.findByEntryYearOrderByEntryDateDescIdDesc(year)
+                : weavingRepo.findAll();
         String[] headers = {"零件号", "年", "月", "日", "机台号", "带坯编号", "型号规格", "经线", "纬线",
                 "班次", "姓名", "当班产量", "标准产能", "标准小时", "标准小时产能", "绩效工时", "备注",
                 "经线米重", "纬线米重（2000D）", "纬线米重（3000D）",
@@ -99,9 +103,14 @@ public class DataExportService {
     /**
      * 导出共挤数据为Excel
      * 列: 时间|机台号|产品类型|产品型号|颜色|主材|成品数量|重量|产能|漏胶|数据质量
+     *
+     * @param year 导出年份（4位）；null 表示导出全部（兼容旧行为，数据量大时建议按年导出）
      */
-    public byte[] exportCoexToExcel() {
-        List<CoexDailyLog> logs = coexRepo.findAll();
+    public byte[] exportCoexToExcel(Integer year) {
+        List<CoexDailyLog> logs = year != null
+                ? coexRepo.findByLogDateBetweenOrderByLogDateDescIdDesc(
+                        LocalDate.of(year, 1, 1), LocalDate.of(year, 12, 31))
+                : coexRepo.findAll();
         String[] headers = {"时间", "机台号", "产品类型", "产品型号", "颜色", "主材",
                 "成品数量", "重量", "产能", "漏胶", "数据质量"};
 
